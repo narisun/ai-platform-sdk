@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "enterprise-ai-platform-sdk"
-version = "0.1.0"
-description = "Enterprise AI Platform — shared SDK for LLM clients, telemetry, and structured logging"
+version = "0.2.0"
+description = "Enterprise AI Platform — shared SDK for agents, MCP servers, security, caching, and compaction"
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.30.0",
@@ -13,7 +13,21 @@ dependencies = [
     "opentelemetry-exporter-otlp>=1.24.0",
     "opentelemetry-instrumentation-openai>=0.25.0",
     "structlog>=24.1.0",
+    # Security — OPA client and API key verifier
+    "httpx>=0.27.0",
+    # Caching — Redis-backed tool result cache (graceful degradation when absent)
+    "redis[asyncio]>=5.0.0",
+    # Compaction — accurate token counting for context trimming
+    "tiktoken>=0.7.0",
+    # Agent factory — LangGraph ReAct agent builder
+    "langchain-openai>=0.1.0",
+    "langgraph>=0.2.0",
+    "langchain-core>=0.2.0",
 ]
+
+[project.optional-dependencies]
+# FastAPI dependency — only needed by services that use make_api_key_verifier()
+fastapi = ["fastapi>=0.111.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]
