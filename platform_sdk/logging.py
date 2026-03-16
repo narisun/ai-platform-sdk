@@ -36,8 +36,11 @@ def configure_logging(level: str | None = None) -> None:
         structlog.processors.StackInfoRenderer(),
     ]
 
-    # Use JSON in non-interactive environments (containers, CI)
-    is_interactive = os.getenv("TERM") or os.getenv("CI") is None
+    # Use JSON in non-interactive environments (containers, CI).
+    # M1: `and` is correct — pretty output only when a terminal IS present AND
+    # we are NOT in CI.  Using `or` would enable console rendering in CI runners
+    # that happen to set TERM, silently disabling JSON logs in pipelines.
+    is_interactive = bool(os.getenv("TERM")) and os.getenv("CI") is None
     if is_interactive and os.getenv("LOG_FORMAT") != "json":
         renderer = structlog.dev.ConsoleRenderer(colors=True)
     else:
