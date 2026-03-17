@@ -3,56 +3,70 @@ Platform SDK — Typed configuration dataclasses.
 
 Every tunable parameter for agents and MCP servers is defined here with
 sensible defaults and read from environment variables via from_env().
-
-Having all knobs in one place means:
-- New services get correct defaults automatically.
-- Platform engineers can audit or change policy centrally.
-- Operators tune behaviour per environment without code changes.
 """
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
 class AgentConfig:
     """
-    Configuration for LangGraph ReAct agents.
+    Configuration for LangGraph agents.
 
-    Covers model routing, context compaction, and tool-result caching.
-    All fields can be overridden via environment variables (see from_env).
+    Covers model routing (including multi-agent tiering), context
+    compaction, session checkpointing, and tool-result caching.
+    All fields can be overridden via environment variables.
 
     Example:
         config = AgentConfig.from_env()
         agent  = build_agent(tools, config=config, prompt=system_prompt)
     """
-    # LLM routing
-    model_route: str         = "complex-routing"   # primary model (GPT-4o / Claude Sonnet)
-    summary_model_route: str = "fast-routing"       # cheap model used for compaction summaries
+    # ---- Primary model routing (backward compatible) ----
+    model_route: str          = "complex-routing"
+    summary_model_route: str  = "fast-routing"
 
-    # Context compaction — trims oldest messages when token budget exceeded
+    # ---- Multi-agent model tiering (orchestrator pattern) ----
+    # router_model_route:     Haiku-class — intent parsing, routing decisions
+    # specialist_model_route: Haiku-class — CRM / Payments / News specialists
+    # synthesis_model_route:  Sonnet-class — final brief synthesis
+    router_model_route: str      = "fast-routing"
+    specialist_model_route: str  = "fast-routing"
+    synthesis_model_route: str   = "complex-routing"
+
+    # ---- Session / checkpointer ----
+    # "memory" = MemorySaver (dev/test), "postgres" = PostgresSaver (prod)
+    checkpointer_type: str       = "memory"
+    checkpointer_db_url: str     = ""
+
+    # ---- Context compaction ----
     enable_compaction: bool  = True
-    context_token_limit: int = 6_000               # trigger compaction above this many tokens
+    context_token_limit: int = 6_000
 
-    # Safety limits
-    recursion_limit: int     = 10                  # LangGraph max tool-call iterations (1–50)
-    max_message_length: int  = 32_000              # reject user messages longer than this
+    # ---- Safety limits ----
+    recursion_limit: int     = 10
+    max_message_length: int  = 32_000
 
-    # Tool-result caching (applies to the agent's own cache, distinct from LiteLLM)
-    enable_tool_cache: bool  = True
-    tool_cache_ttl_seconds: int = 300              # 5 min — tune based on data freshness needs
+    # ---- Tool-result caching ----
+    enable_tool_cache: bool     = True
+    tool_cache_ttl_seconds: int = 300
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
-        """Read configuration from environment variables, falling back to defaults."""
         raw_recursion = int(os.environ.get("AGENT_RECURSION_LIMIT", str(cls.recursion_limit)))
         return cls(
             model_route=os.environ.get("AGENT_MODEL_ROUTE", cls.model_route),
             summary_model_route=os.environ.get("SUMMARY_MODEL_ROUTE", cls.summary_model_route),
+            router_model_route=os.environ.get("ROUTER_MODEL_ROUTE", cls.router_model_route),
+            specialist_model_route=os.environ.get("SPECIALIST_MODEL_ROUTE", cls.specialist_model_route),
+            synthesis_model_route=os.environ.get("SYNTHESIS_MODEL_ROUTE", cls.synthesis_model_route),
+            checkpointer_type=os.environ.get("CHECKPOINTER_TYPE", cls.checkpointer_type),
+            checkpointer_db_url=os.environ.get("CHECKPOINTER_DB_URL", cls.checkpointer_db_url),
             enable_compaction=os.environ.get("ENABLE_COMPACTION", "true").lower() == "true",
             context_token_limit=int(
                 os.environ.get("AGENT_CONTEXT_TOKEN_LIMIT", str(cls.context_token_limit))
             ),
-            recursion_limit=max(1, min(raw_recursion, 50)),   # hard-clamped 1–50
+            recursion_limit=max(1, min(raw_recursion, 50)),
             max_message_length=int(
                 os.environ.get("MAX_MESSAGE_LENGTH", str(cls.max_message_length))
             ),

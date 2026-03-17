@@ -1,36 +1,42 @@
 """
-Enterprise AI Platform SDK.
+Enterprise AI Platform SDK — public API surface.
 
-Public surface area — everything a new agent or MCP server needs:
+Observability:
+    configure_logging()              — structlog JSON logging
+    get_logger(name)                 — structured logger
+    setup_telemetry(svc)             — OpenTelemetry init (idempotent)
 
-  Observability
-    configure_logging()     — set up structlog JSON logging
-    get_logger(name)        — get a structured logger
-    setup_telemetry(svc)    — initialise OpenTelemetry (idempotent)
+LLM client:
+    EnterpriseLLMClient              — thin LiteLLM proxy wrapper
 
-  LLM client
-    EnterpriseLLMClient     — thin wrapper around LiteLLM proxy
+Configuration:
+    AgentConfig                      — typed config for agents (from_env())
+    MCPConfig                        — typed config for MCP servers (from_env())
 
-  Configuration
-    AgentConfig             — typed config for LangGraph agents (from_env())
-    MCPConfig               — typed config for FastMCP servers (from_env())
+Security:
+    OpaClient                        — async OPA client (fail-closed, retry)
+    make_api_key_verifier()          — FastAPI Bearer-token dependency
+    AgentContext                     — JWT-verified RM session context
+                                       (role, assigned_account_ids, clearance)
 
-  Security
-    OpaClient               — async OPA decision client (fail-closed, retry)
-    make_api_key_verifier() — FastAPI Bearer-token dependency factory
+Caching:
+    ToolResultCache                  — Redis-backed tool result cache
+    cached_tool(cache)               — decorator: cache get/set for async tools
 
-  Caching
-    ToolResultCache         — Redis-backed tool result cache (graceful degradation)
-    cached_tool(cache)      — decorator that adds cache get/set to an async tool
+Compaction:
+    make_compaction_modifier(config) — LangGraph state_modifier for token trimming
 
-  Compaction
-    make_compaction_modifier(config) — LangGraph state_modifier for context trimming
+Agent factories:
+    build_agent(tools, config, prompt)
+        Standard ReAct agent with compaction + LiteLLM routing.
 
-  Agent factory
-    build_agent(tools, config, prompt) — build a LangGraph ReAct agent with
-                                         compaction and LiteLLM routing wired in
+    build_specialist_agent(tools, config, prompt, model_override)
+        Same as build_agent but accepts a per-specialist model override.
+        Used by orchestrators for model tiering (cheap specialists,
+        expensive synthesis).
 """
-from .agent import build_agent
+from .agent import build_agent, build_specialist_agent
+from .auth import AgentContext
 from .cache import ToolResultCache, cached_tool
 from .compaction import make_compaction_modifier
 from .config import AgentConfig, MCPConfig
@@ -52,11 +58,13 @@ __all__ = [
     # Security
     "OpaClient",
     "make_api_key_verifier",
+    "AgentContext",
     # Caching
     "ToolResultCache",
     "cached_tool",
     # Compaction
     "make_compaction_modifier",
-    # Agent factory
+    # Agent factories
     "build_agent",
+    "build_specialist_agent",
 ]
