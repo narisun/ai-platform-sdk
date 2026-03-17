@@ -35,7 +35,7 @@ Agent factories:
         Used by orchestrators for model tiering (cheap specialists,
         expensive synthesis).
 """
-from .agent import build_agent, build_specialist_agent
+from .agent import build_agent, build_specialist_agent, make_chat_llm
 from .auth import AgentContext
 from .cache import ToolResultCache, cached_tool
 from .compaction import make_compaction_modifier
@@ -67,4 +67,5 @@ __all__ = [
     # Agent factories
     "build_agent",
     "build_specialist_agent",
+    "make_chat_llm",
 ]

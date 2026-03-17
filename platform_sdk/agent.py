@@ -47,6 +47,39 @@ else:
 log.debug("langgraph_compat", modifier_kwarg=_MODIFIER_KWARG)
 
 
+def make_chat_llm(
+    model_route: str,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> "ChatOpenAI":
+    """
+    Construct a LangChain ChatOpenAI client pointed at the LiteLLM proxy.
+
+    Use this for LLM nodes that need LangChain-native features (structured
+    output, streaming) but do not need the full ReAct agent scaffolding.
+
+    Args:
+        model_route: LiteLLM route name (e.g. "complex-routing").
+        base_url:    LiteLLM proxy URL. Defaults to LITELLM_BASE_URL env var.
+        api_key:     Bearer token. Defaults to INTERNAL_API_KEY env var.
+
+    Returns:
+        Configured ChatOpenAI instance at temperature=0.
+    """
+    resolved_base_url = base_url or os.environ.get("LITELLM_BASE_URL", "http://localhost:4000/v1")
+    resolved_api_key = api_key or os.environ.get("INTERNAL_API_KEY", "")
+    if not resolved_api_key:
+        raise ValueError("INTERNAL_API_KEY must be set — see .env.example")
+
+    return ChatOpenAI(
+        model=model_route,
+        api_key=resolved_api_key,
+        base_url=resolved_base_url,
+        temperature=0,
+        max_retries=2,
+    )
+
+
 def build_agent(
     tools: list,
     config: Optional[AgentConfig] = None,
