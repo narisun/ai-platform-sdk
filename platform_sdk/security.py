@@ -74,6 +74,13 @@ class OpaClient:
         )
         log.info("opa_client_ready", url=self._url)
 
+    # Methods to support 'async with OpaClient() as opa:'
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.aclose()        
+
     async def authorize(self, tool_name: str, payload: dict) -> bool:
         """
         Ask OPA whether tool_name is allowed for the given payload.
