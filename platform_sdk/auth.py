@@ -3,25 +3,68 @@ AgentContext — JWT-based authorization context.
 
 Carries the verified identity and permission claims for a single RM session.
 Created once in the orchestrator from a verified JWT, then forwarded as a
-base64-JSON header on every MCP tool call.
+HMAC-signed base64-JSON header on every MCP tool call.
 
 Flow:
   Streamlit UI  →  POST /brief  →  Authorization: Bearer <JWT>
   Orchestrator  →  AgentContext.from_jwt(token)
-  Orchestrator  →  MCPToolBridge(ctx=ctx)  →  X-Agent-Context: <base64>
-  MCP server    →  AgentContext.from_header(raw)
+  Orchestrator  →  MCPToolBridge(ctx=ctx)  →  X-Agent-Context: <base64>.<hmac>
+  MCP server    →  AgentContext.from_header(raw)  [verifies HMAC before decode]
   MCP server    →  build_row_filters(ctx) / build_col_mask(ctx)  →  PostgreSQL
+
+X-Agent-Context wire format
+───────────────────────────
+  <base64url(JSON payload)>.<hex(HMAC-SHA256(base64url(JSON payload), CONTEXT_HMAC_SECRET))>
+
+Both segments are required.  from_header() raises ValueError if the signature
+is absent or does not match — the middleware then falls through to anonymous()
+which grants the minimum-privilege context (readonly / standard clearance).
+
+CONTEXT_HMAC_SECRET should be a separate secret from JWT_SECRET so that a JWT
+compromise alone is insufficient to forge MCP context headers.
 """
 from __future__ import annotations
 
 import base64
 import dataclasses
+import hashlib
+import hmac
 import json
 import os
 from typing import Any
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-in-prod")
 JWT_ALGORITHM = "HS256"
+
+# Secret used to sign the X-Agent-Context header.  Defaults to JWT_SECRET so
+# existing single-secret deployments keep working; set CONTEXT_HMAC_SECRET to a
+# separate value in production for defence-in-depth.
+_CONTEXT_HMAC_SECRET: bytes = os.environ.get(
+    "CONTEXT_HMAC_SECRET", JWT_SECRET
+).encode()
+
+
+def _sign(payload_b64: str) -> str:
+    """Return hex HMAC-SHA256 of the base64 payload."""
+    return hmac.new(_CONTEXT_HMAC_SECRET, payload_b64.encode(), hashlib.sha256).hexdigest()
+
+
+def _verify_and_split(raw: str) -> str:
+    """
+    Verify the HMAC signature and return the payload segment.
+
+    Raises ValueError on missing separator, wrong length, or bad signature.
+    Constant-time comparison prevents timing attacks.
+    """
+    parts = raw.split(".")
+    if len(parts) != 2:
+        raise ValueError("X-Agent-Context: expected <payload>.<sig>, got wrong segment count")
+    payload_b64, sig = parts
+    expected = _sign(payload_b64)
+    if not hmac.compare_digest(sig, expected):
+        raise ValueError("X-Agent-Context: HMAC signature mismatch — possible forgery attempt")
+    return payload_b64
+
 
 # Compliance clearance levels (ordered from lowest to highest)
 CLEARANCE_LEVELS = ["standard", "aml_view", "compliance_full"]
@@ -65,13 +108,24 @@ class AgentContext:
         }
 
     def to_header_value(self) -> str:
-        """Encode as base64-JSON for the X-Agent-Context header."""
-        return base64.b64encode(json.dumps(self.to_dict()).encode()).decode()
+        """Encode as signed base64-JSON for the X-Agent-Context header.
+
+        Format: <base64url(JSON)>.<hex(HMAC-SHA256)>
+        """
+        payload_b64 = base64.b64encode(json.dumps(self.to_dict()).encode()).decode()
+        sig = _sign(payload_b64)
+        return f"{payload_b64}.{sig}"
 
     @classmethod
     def from_header(cls, raw: str) -> "AgentContext":
-        """Decode from X-Agent-Context header value."""
-        data = json.loads(base64.b64decode(raw))
+        """Decode and verify the X-Agent-Context header value.
+
+        Raises ValueError if the HMAC signature is missing or invalid.
+        Callers (AgentContextMiddleware) should catch ValueError and fall
+        back to AgentContext.anonymous() — which now grants minimum privilege.
+        """
+        payload_b64 = _verify_and_split(raw)
+        data = json.loads(base64.b64decode(payload_b64))
         return cls(
             rm_id=data.get("rm_id", "unknown"),
             rm_name=data.get("rm_name", ""),
@@ -101,14 +155,22 @@ class AgentContext:
 
     @classmethod
     def anonymous(cls) -> "AgentContext":
-        """No-auth context for local development when AUTH_MODE=none."""
+        """Minimum-privilege context used when no valid X-Agent-Context header is present.
+
+        Grants readonly role and standard clearance only — no compliance columns,
+        no AML columns, no assigned accounts.  Fail-closed: unknown identity → least access.
+
+        For local development with full access, set AUTH_MODE=none in the orchestrator
+        and pass an explicitly constructed AgentContext via MCPToolBridge, rather than
+        relying on this fallback.
+        """
         return cls(
-            rm_id="dev",
-            rm_name="Dev User",
-            role="manager",
-            team_id="dev",
+            rm_id="anonymous",
+            rm_name="Unauthenticated",
+            role="readonly",
+            team_id="",
             assigned_account_ids=(),
-            compliance_clearance=("standard", "aml_view", "compliance_full"),
+            compliance_clearance=("standard",),
         )
 
     # ── Authorization helpers ──────────────────────────────────────────────────
