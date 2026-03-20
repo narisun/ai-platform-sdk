@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 fastapi = ["fastapi>=0.111.0"]
+mcp-bridge = ["mcp>=1.0.0"]
 postgres-checkpointer = ["langgraph-checkpoint-postgres>=2.0.0"]
 
 [tool.setuptools.packages.find]

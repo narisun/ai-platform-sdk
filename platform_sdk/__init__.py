@@ -36,7 +36,8 @@ Agent factories:
         expensive synthesis).
 """
 from .agent import build_agent, build_specialist_agent, make_chat_llm
-from .auth import AgentContext
+from .auth import AgentContext, assert_secrets_configured
+from .authorized_tool import authorized_tool, is_error_response, make_error
 from .cache import ToolResultCache, cached_tool
 from .compaction import make_compaction_modifier
 from .config import AgentConfig, MCPConfig
@@ -44,6 +45,16 @@ from .llm_client import EnterpriseLLMClient
 from .logging import configure_logging, get_logger
 from .security import OpaClient, make_api_key_verifier
 from .telemetry import setup_telemetry
+
+# MCP Bridge — optional dependency (requires `mcp` package).
+# Consumers that don't connect to MCP servers (e.g. portfolio-watch) can
+# import the SDK without installing the `mcp` package.
+try:
+    from .mcp_bridge import MCPToolBridge, reset_session_id, set_session_id
+except ImportError:
+    MCPToolBridge = None  # type: ignore[assignment,misc]
+    set_session_id = None  # type: ignore[assignment]
+    reset_session_id = None  # type: ignore[assignment]
 
 __all__ = [
     # Observability
@@ -59,6 +70,11 @@ __all__ = [
     "OpaClient",
     "make_api_key_verifier",
     "AgentContext",
+    "assert_secrets_configured",
+    # Authorization
+    "authorized_tool",
+    "make_error",
+    "is_error_response",
     # Caching
     "ToolResultCache",
     "cached_tool",
@@ -68,4 +84,8 @@ __all__ = [
     "build_agent",
     "build_specialist_agent",
     "make_chat_llm",
+    # MCP Bridge
+    "MCPToolBridge",
+    "set_session_id",
+    "reset_session_id",
 ]

@@ -33,20 +33,50 @@ import json
 import os
 from typing import Any
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-in-prod")
 JWT_ALGORITHM = "HS256"
+_DEFAULT_DEV_SECRET = "dev-secret-change-in-prod"
 
-# Secret used to sign the X-Agent-Context header.  Defaults to JWT_SECRET so
-# existing single-secret deployments keep working; set CONTEXT_HMAC_SECRET to a
-# separate value in production for defence-in-depth.
-_CONTEXT_HMAC_SECRET: bytes = os.environ.get(
-    "CONTEXT_HMAC_SECRET", JWT_SECRET
-).encode()
+
+def _get_jwt_secret() -> str:
+    """Read JWT_SECRET at call time, not import time.
+
+    This ensures monkeypatched env vars in tests and late-set Docker
+    Compose variables are picked up correctly.
+    """
+    return os.environ.get("JWT_SECRET", _DEFAULT_DEV_SECRET)
+
+
+def _get_hmac_secret() -> bytes:
+    """Read CONTEXT_HMAC_SECRET at call time, falling back to JWT_SECRET.
+
+    Defence-in-depth: set CONTEXT_HMAC_SECRET to a separate value in
+    production so a JWT compromise alone cannot forge MCP context headers.
+    """
+    jwt_secret = _get_jwt_secret()
+    return os.environ.get("CONTEXT_HMAC_SECRET", jwt_secret).encode()
+
+
+def assert_secrets_configured(environment: str | None = None) -> None:
+    """Refuse to proceed if secrets are still defaults in a prod environment.
+
+    Call this during service startup (lifespan or __main__) to fail fast
+    rather than serving requests with insecure defaults.
+
+    Raises:
+        RuntimeError: if JWT_SECRET is the default in a prod environment.
+    """
+    env = environment or os.environ.get("ENVIRONMENT", "prod")
+    secret = _get_jwt_secret()
+    if env == "prod" and secret == _DEFAULT_DEV_SECRET:
+        raise RuntimeError(
+            "JWT_SECRET has not been rotated from the default value in a "
+            "prod environment.  Set JWT_SECRET to a strong random secret."
+        )
 
 
 def _sign(payload_b64: str) -> str:
     """Return hex HMAC-SHA256 of the base64 payload."""
-    return hmac.new(_CONTEXT_HMAC_SECRET, payload_b64.encode(), hashlib.sha256).hexdigest()
+    return hmac.new(_get_hmac_secret(), payload_b64.encode(), hashlib.sha256).hexdigest()
 
 
 def _verify_and_split(raw: str) -> str:
@@ -143,7 +173,7 @@ class AgentContext:
         except ImportError:
             raise RuntimeError("PyJWT not installed — add pyjwt to requirements")
 
-        payload = pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = pyjwt.decode(token, _get_jwt_secret(), algorithms=[JWT_ALGORITHM])
         return cls(
             rm_id=payload["sub"],
             rm_name=payload.get("name", ""),

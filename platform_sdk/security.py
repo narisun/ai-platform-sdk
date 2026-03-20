@@ -36,6 +36,7 @@ Example — FastAPI service:
         ...
 """
 import asyncio
+import hmac
 import os
 from typing import Optional
 
@@ -182,7 +183,7 @@ def make_api_key_verifier(api_key: Optional[str] = None):
                 status_code=500,
                 detail="Service temporarily unavailable. Contact your administrator.",
             )
-        if credentials.credentials != key:
+        if not hmac.compare_digest(credentials.credentials, key):
             log.warning("auth_rejected", reason="invalid_api_key")
             raise HTTPException(status_code=401, detail="Unauthorized")
         return credentials.credentials

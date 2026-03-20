@@ -36,6 +36,7 @@ Key design decisions:
 import hashlib
 import json
 import os
+import time
 from functools import wraps
 from typing import Callable, Optional
 
@@ -45,18 +46,52 @@ log = get_logger(__name__)
 
 _KEY_PREFIX = "tool_cache:"
 
+# Circuit-breaker defaults
+_CB_FAILURE_THRESHOLD = 5     # consecutive failures before opening the circuit
+_CB_RECOVERY_TIMEOUT  = 30.0  # seconds before trying Redis again
+
 
 class ToolResultCache:
     """
-    Async Redis cache for tool results.
+    Async Redis cache for tool results with circuit-breaker pattern.
 
     Gracefully degrades: when constructed with redis=None (i.e. Redis is not
     configured), get/set are no-ops so callers do not need special-case logic.
+
+    Circuit breaker: after _CB_FAILURE_THRESHOLD consecutive errors, the cache
+    bypasses Redis for _CB_RECOVERY_TIMEOUT seconds before probing again.
+    This prevents Redis outages from adding latency to every tool call.
     """
 
     def __init__(self, redis_client, ttl_seconds: int = 300) -> None:  # type: ignore[valid-type]
         self._redis = redis_client   # redis.asyncio.Redis or None
         self._ttl   = ttl_seconds
+        # Circuit-breaker state
+        self._consecutive_failures = 0
+        self._circuit_open_until: float = 0.0  # monotonic timestamp
+
+    def _is_circuit_open(self) -> bool:
+        if self._consecutive_failures < _CB_FAILURE_THRESHOLD:
+            return False
+        if time.monotonic() >= self._circuit_open_until:
+            # Recovery timeout elapsed — allow a probe
+            return False
+        return True
+
+    def _record_success(self) -> None:
+        if self._consecutive_failures > 0:
+            log.info("cache_circuit_closed", after_failures=self._consecutive_failures)
+        self._consecutive_failures = 0
+
+    def _record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= _CB_FAILURE_THRESHOLD:
+            self._circuit_open_until = time.monotonic() + _CB_RECOVERY_TIMEOUT
+            log.warning(
+                "cache_circuit_opened",
+                failures=self._consecutive_failures,
+                recovery_seconds=_CB_RECOVERY_TIMEOUT,
+            )
 
     # ------------------------------------------------------------------
     # Public API
@@ -64,27 +99,31 @@ class ToolResultCache:
 
     async def get(self, key: str) -> Optional[str]:
         """Return cached value or None (also None on any Redis error)."""
-        if self._redis is None:
+        if self._redis is None or self._is_circuit_open():
             return None
         try:
             value = await self._redis.get(key)
+            self._record_success()
             if value is not None:
                 log.info("cache_hit", key=key)
                 return value.decode() if isinstance(value, bytes) else value
             log.debug("cache_miss", key=key)
             return None
         except Exception as exc:
+            self._record_failure()
             log.warning("cache_get_error", key=key, error=str(exc))
             return None
 
     async def set(self, key: str, value: str) -> None:
         """Store value with TTL (silently ignores any Redis error)."""
-        if self._redis is None:
+        if self._redis is None or self._is_circuit_open():
             return
         try:
             await self._redis.setex(key, self._ttl, value)
+            self._record_success()
             log.debug("cache_set", key=key, ttl=self._ttl)
         except Exception as exc:
+            self._record_failure()
             log.warning("cache_set_error", key=key, error=str(exc))
 
     # ------------------------------------------------------------------
@@ -196,8 +235,10 @@ def cached_tool(cache: Optional[ToolResultCache]) -> Callable:
 
             result: str = await fn(**kwargs)
 
-            # Never cache error responses — they should be retried fresh
-            if not result.startswith("ERROR:"):
+            # Never cache error responses — they should be retried fresh.
+            # Recognises both legacy "ERROR:" prefix and new JSON {"error": ...} format.
+            from .authorized_tool import is_error_response
+            if not is_error_response(result):
                 await cache.set(key, result)
 
             return result

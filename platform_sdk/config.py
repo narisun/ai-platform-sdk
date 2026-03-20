@@ -106,6 +106,10 @@ class MCPConfig:
     enable_tool_cache: bool   = True
     tool_cache_ttl_seconds: int = 300
 
+    # Database connection pool
+    # Set to 0 for pgBouncer compatibility (disables prepared statement cache)
+    statement_cache_size: int = 1024
+
     @classmethod
     def from_env(cls) -> "MCPConfig":
         """Read configuration from environment variables, falling back to defaults."""
@@ -122,5 +126,8 @@ class MCPConfig:
             enable_tool_cache=os.environ.get("ENABLE_TOOL_CACHE", "true").lower() == "true",
             tool_cache_ttl_seconds=int(
                 os.environ.get("TOOL_CACHE_TTL", str(cls.tool_cache_ttl_seconds))
+            ),
+            statement_cache_size=int(
+                os.environ.get("STATEMENT_CACHE_SIZE", str(cls.statement_cache_size))
             ),
         )
