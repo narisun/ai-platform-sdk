@@ -51,6 +51,20 @@ class AgentConfig:
     enable_tool_cache: bool     = True
     tool_cache_ttl_seconds: int = 300
 
+    def __post_init__(self) -> None:
+        """Validate configuration at construction time (fail-fast)."""
+        errors: list[str] = []
+        if self.context_token_limit < 100:
+            errors.append(f"context_token_limit={self.context_token_limit} is too low (min 100)")
+        if self.max_message_length < 100:
+            errors.append(f"max_message_length={self.max_message_length} is too low (min 100)")
+        if self.tool_cache_ttl_seconds < 0:
+            errors.append(f"tool_cache_ttl_seconds={self.tool_cache_ttl_seconds} cannot be negative")
+        if not self.model_route:
+            errors.append("model_route must not be empty")
+        if errors:
+            raise ValueError(f"AgentConfig validation failed: {'; '.join(errors)}")
+
     @classmethod
     def from_env(cls) -> "AgentConfig":
         raw_recursion = int(os.environ.get("AGENT_RECURSION_LIMIT", str(cls.recursion_limit)))
@@ -106,9 +120,47 @@ class MCPConfig:
     enable_tool_cache: bool   = True
     tool_cache_ttl_seconds: int = 300
 
+    # Resilience parameters (circuit breaker, retry, backoff)
+    cb_failure_threshold: int = 5       # consecutive failures before opening circuit
+    cb_recovery_timeout: float = 30.0   # seconds before probing after circuit opens
+    opa_max_retries: int = 2            # OPA authorization retry count
+    opa_retry_backoff: float = 0.2      # seconds between OPA retries
+    mcp_reconnect_backoff_cap: float = 60.0  # max seconds between MCP reconnect attempts
+    tool_call_timeout: float = 30.0     # timeout for individual MCP tool calls (seconds)
+
     # Database connection pool
     # Set to 0 for pgBouncer compatibility (disables prepared statement cache)
     statement_cache_size: int = 1024
+
+    _VALID_ENVIRONMENTS = {"dev", "local", "staging", "prod", "test"}
+    _VALID_AGENT_ROLES = {
+        "commercial_banking_agent", "data_analyst_agent", "compliance_agent",
+        "rm_prep_agent", "portfolio_watch_agent",
+    }
+
+    def __post_init__(self) -> None:
+        """Validate configuration at construction time (fail-fast)."""
+        errors: list[str] = []
+        if not self.opa_url:
+            errors.append("opa_url must not be empty")
+        elif not self.opa_url.startswith(("http://", "https://")):
+            errors.append(f"opa_url must be an HTTP(S) URL, got: {self.opa_url}")
+        if self.environment not in self._VALID_ENVIRONMENTS:
+            errors.append(
+                f"environment='{self.environment}' not in {self._VALID_ENVIRONMENTS}"
+            )
+        if self.agent_role not in self._VALID_AGENT_ROLES:
+            errors.append(
+                f"agent_role='{self.agent_role}' not in {self._VALID_AGENT_ROLES}"
+            )
+        if self.opa_timeout_seconds <= 0:
+            errors.append(f"opa_timeout_seconds={self.opa_timeout_seconds} must be positive")
+        if self.max_result_bytes < 1000:
+            errors.append(f"max_result_bytes={self.max_result_bytes} is too low (min 1000)")
+        if self.tool_cache_ttl_seconds < 0:
+            errors.append(f"tool_cache_ttl_seconds={self.tool_cache_ttl_seconds} cannot be negative")
+        if errors:
+            raise ValueError(f"MCPConfig validation failed: {'; '.join(errors)}")
 
     @classmethod
     def from_env(cls) -> "MCPConfig":
@@ -126,6 +178,24 @@ class MCPConfig:
             enable_tool_cache=os.environ.get("ENABLE_TOOL_CACHE", "true").lower() == "true",
             tool_cache_ttl_seconds=int(
                 os.environ.get("TOOL_CACHE_TTL", str(cls.tool_cache_ttl_seconds))
+            ),
+            cb_failure_threshold=int(
+                os.environ.get("CB_FAILURE_THRESHOLD", str(cls.cb_failure_threshold))
+            ),
+            cb_recovery_timeout=float(
+                os.environ.get("CB_RECOVERY_TIMEOUT", str(cls.cb_recovery_timeout))
+            ),
+            opa_max_retries=int(
+                os.environ.get("OPA_MAX_RETRIES", str(cls.opa_max_retries))
+            ),
+            opa_retry_backoff=float(
+                os.environ.get("OPA_RETRY_BACKOFF", str(cls.opa_retry_backoff))
+            ),
+            mcp_reconnect_backoff_cap=float(
+                os.environ.get("MCP_RECONNECT_BACKOFF_CAP", str(cls.mcp_reconnect_backoff_cap))
+            ),
+            tool_call_timeout=float(
+                os.environ.get("TOOL_CALL_TIMEOUT", str(cls.tool_call_timeout))
             ),
             statement_cache_size=int(
                 os.environ.get("STATEMENT_CACHE_SIZE", str(cls.statement_cache_size))

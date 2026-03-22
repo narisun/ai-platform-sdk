@@ -56,6 +56,22 @@ def _get_hmac_secret() -> bytes:
     return os.environ.get("CONTEXT_HMAC_SECRET", jwt_secret).encode()
 
 
+def _get_previous_hmac_secret() -> bytes | None:
+    """Read CONTEXT_HMAC_SECRET_PREVIOUS for dual-secret rotation windows.
+
+    During secret rotation, both the current and previous secrets are accepted
+    so services can be redeployed independently without coordinated downtime.
+    Returns None if no previous secret is configured (normal operation).
+    """
+    prev = os.environ.get("CONTEXT_HMAC_SECRET_PREVIOUS", "")
+    return prev.encode() if prev else None
+
+
+def _get_previous_jwt_secret() -> str | None:
+    """Read JWT_SECRET_PREVIOUS for dual-secret rotation windows."""
+    return os.environ.get("JWT_SECRET_PREVIOUS") or None
+
+
 def assert_secrets_configured(environment: str | None = None) -> None:
     """Refuse to proceed if secrets are still defaults in a prod environment.
 
@@ -83,6 +99,9 @@ def _verify_and_split(raw: str) -> str:
     """
     Verify the HMAC signature and return the payload segment.
 
+    Supports dual-secret verification during rotation windows:
+    tries the current secret first, then falls back to the previous secret.
+
     Raises ValueError on missing separator, wrong length, or bad signature.
     Constant-time comparison prevents timing attacks.
     """
@@ -90,10 +109,20 @@ def _verify_and_split(raw: str) -> str:
     if len(parts) != 2:
         raise ValueError("X-Agent-Context: expected <payload>.<sig>, got wrong segment count")
     payload_b64, sig = parts
+
+    # Try current secret
     expected = _sign(payload_b64)
-    if not hmac.compare_digest(sig, expected):
-        raise ValueError("X-Agent-Context: HMAC signature mismatch — possible forgery attempt")
-    return payload_b64
+    if hmac.compare_digest(sig, expected):
+        return payload_b64
+
+    # Try previous secret (rotation window)
+    prev_secret = _get_previous_hmac_secret()
+    if prev_secret:
+        expected_prev = hmac.new(prev_secret, payload_b64.encode(), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(sig, expected_prev):
+            return payload_b64
+
+    raise ValueError("X-Agent-Context: HMAC signature mismatch — possible forgery attempt")
 
 
 # Compliance clearance levels (ordered from lowest to highest)
@@ -124,6 +153,11 @@ class AgentContext:
     team_id: str
     assigned_account_ids: tuple[str, ...]  # empty tuple = no row restriction
     compliance_clearance: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Fail-closed: empty clearance defaults to minimum privilege (standard only)."""
+        if not self.compliance_clearance:
+            object.__setattr__(self, 'compliance_clearance', ('standard',))
 
     # ── Serialization ──────────────────────────────────────────────────────────
 
@@ -167,13 +201,28 @@ class AgentContext:
 
     @classmethod
     def from_jwt(cls, token: str) -> "AgentContext":
-        """Verify and decode a JWT into an AgentContext. Raises jwt exceptions on failure."""
+        """Verify and decode a JWT into an AgentContext.
+
+        Supports dual-secret verification during rotation windows:
+        tries the current JWT_SECRET first, then JWT_SECRET_PREVIOUS.
+        Raises jwt exceptions on failure.
+        """
         try:
             import jwt as pyjwt
         except ImportError:
             raise RuntimeError("PyJWT not installed — add pyjwt to requirements")
 
-        payload = pyjwt.decode(token, _get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+        # Try current secret
+        try:
+            payload = pyjwt.decode(token, _get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+        except pyjwt.InvalidSignatureError:
+            # Try previous secret (rotation window)
+            prev_secret = _get_previous_jwt_secret()
+            if prev_secret:
+                payload = pyjwt.decode(token, prev_secret, algorithms=[JWT_ALGORITHM])
+            else:
+                raise
+
         return cls(
             rm_id=payload["sub"],
             rm_name=payload.get("name", ""),

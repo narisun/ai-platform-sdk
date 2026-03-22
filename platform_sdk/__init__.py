@@ -38,13 +38,32 @@ Agent factories:
 from .agent import build_agent, build_specialist_agent, make_chat_llm
 from .auth import AgentContext, assert_secrets_configured
 from .authorized_tool import authorized_tool, is_error_response, make_error
+from .bridge_health import BridgeHealthMatrix
 from .cache import ToolResultCache, cached_tool
 from .compaction import make_compaction_modifier
 from .config import AgentConfig, MCPConfig
 from .llm_client import EnterpriseLLMClient
 from .logging import configure_logging, get_logger
+from .mcp_server_base import BaseMCPServer, make_health_router
+from .metrics import (
+    record_cache_state,
+    record_cache_transition,
+    record_opa_decision,
+    record_opa_circuit_state,
+    record_mcp_tool_call,
+)
+from .protocols import Authorizer, CacheStore, LLMClient, ToolBridge
 from .security import OpaClient, make_api_key_verifier
 from .telemetry import setup_telemetry
+from .models import (
+    ErrorDetail,
+    ToolResponse,
+    make_tool_error,
+    make_tool_success,
+    SalesforceSummaryData,
+    PaymentSummaryData,
+    NewsSummaryData,
+)
 
 # MCP Bridge — optional dependency (requires `mcp` package).
 # Consumers that don't connect to MCP servers (e.g. portfolio-watch) can
@@ -75,15 +94,39 @@ __all__ = [
     "authorized_tool",
     "make_error",
     "is_error_response",
+    # Bridge health
+    "BridgeHealthMatrix",
     # Caching
     "ToolResultCache",
     "cached_tool",
     # Compaction
     "make_compaction_modifier",
+    # Metrics
+    "record_cache_state",
+    "record_cache_transition",
+    "record_opa_decision",
+    "record_opa_circuit_state",
+    "record_mcp_tool_call",
+    # Protocols (for dependency injection / testability)
+    "Authorizer",
+    "CacheStore",
+    "LLMClient",
+    "ToolBridge",
+    # MCP Server base
+    "BaseMCPServer",
+    "make_health_router",
     # Agent factories
     "build_agent",
     "build_specialist_agent",
     "make_chat_llm",
+    # Response models
+    "ErrorDetail",
+    "ToolResponse",
+    "make_tool_error",
+    "make_tool_success",
+    "SalesforceSummaryData",
+    "PaymentSummaryData",
+    "NewsSummaryData",
     # MCP Bridge
     "MCPToolBridge",
     "set_session_id",

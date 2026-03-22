@@ -54,7 +54,9 @@ class OpaClient:
 
     Design principles:
     - Fail CLOSED: any error (timeout, HTTP error, exception) denies the call.
-    - One retry with a 200 ms back-off on transient network errors.
+    - Configurable retry with back-off on transient network errors.
+    - Circuit breaker: after N consecutive failures, fail fast for a recovery
+      period before probing again (prevents latency amplification during outages).
     - Shared httpx.AsyncClient connection pool — no new TCP connection per call.
     - Environment and agent_role are SERVER-STAMPED, never read from the caller's
       payload, preventing the local-env bypass attack (code review finding H3).
@@ -64,6 +66,8 @@ class OpaClient:
         self._url         = config.opa_url
         self._environment = config.environment   # stamped server-side
         self._agent_role  = config.agent_role    # stamped server-side
+        self._max_retries = getattr(config, 'opa_max_retries', 2)
+        self._retry_backoff = getattr(config, 'opa_retry_backoff', 0.2)
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=1.0,
@@ -73,6 +77,11 @@ class OpaClient:
             ),
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         )
+        # Circuit breaker state
+        self._cb_threshold = getattr(config, 'cb_failure_threshold', 5)
+        self._cb_recovery_timeout = getattr(config, 'cb_recovery_timeout', 30.0)
+        self._consecutive_failures = 0
+        self._circuit_open_until: float = 0.0
         log.info("opa_client_ready", url=self._url)
 
     # Methods to support 'async with OpaClient() as opa:'
@@ -80,7 +89,35 @@ class OpaClient:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.aclose()        
+        await self.aclose()
+
+    def _is_circuit_open(self) -> bool:
+        """Check if the circuit breaker is open (fail-fast mode)."""
+        import time
+        if self._consecutive_failures < self._cb_threshold:
+            return False
+        if time.monotonic() >= self._circuit_open_until:
+            # Recovery timeout elapsed — allow a probe
+            return False
+        return True
+
+    def _record_success(self) -> None:
+        """Reset circuit breaker on successful OPA call."""
+        if self._consecutive_failures > 0:
+            log.info("opa_circuit_closed", after_failures=self._consecutive_failures)
+        self._consecutive_failures = 0
+
+    def _record_failure(self) -> None:
+        """Track failure and potentially open the circuit breaker."""
+        import time
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._cb_threshold:
+            self._circuit_open_until = time.monotonic() + self._cb_recovery_timeout
+            log.warning(
+                "opa_circuit_opened",
+                failures=self._consecutive_failures,
+                recovery_seconds=self._cb_recovery_timeout,
+            )
 
     async def authorize(self, tool_name: str, payload: dict) -> bool:
         """
@@ -90,7 +127,13 @@ class OpaClient:
         values so callers cannot escalate privileges by injecting them.
 
         Returns True if OPA grants access, False on denial or any error.
+        Circuit breaker: after consecutive failures, fails fast without network calls.
         """
+        # Circuit breaker: fail fast if OPA is known to be unavailable
+        if self._is_circuit_open():
+            log.warning("opa_circuit_open_deny", tool=tool_name)
+            return False
+
         input_data = {
             **payload,
             "tool": tool_name,
@@ -98,13 +141,14 @@ class OpaClient:
             "agent_role":  self._agent_role,    # overrides any caller-supplied value
         }
 
-        for attempt in range(2):
+        for attempt in range(self._max_retries):
             try:
                 response = await self._client.post(
                     self._url, json={"input": input_data}
                 )
                 response.raise_for_status()
                 decision = bool(response.json().get("result", False))
+                self._record_success()
                 log.info(
                     "opa_decision",
                     tool=tool_name, allowed=decision, attempt=attempt + 1,
@@ -113,12 +157,14 @@ class OpaClient:
 
             except httpx.TimeoutException:
                 log.warning("opa_timeout", tool=tool_name, attempt=attempt + 1)
+                self._record_failure()
 
             except httpx.HTTPStatusError as exc:
                 log.error(
                     "opa_http_error",
                     tool=tool_name, status=exc.response.status_code,
                 )
+                self._record_failure()
                 return False  # fail closed immediately — no retry on HTTP errors
 
             except Exception as exc:
@@ -126,9 +172,10 @@ class OpaClient:
                     "opa_error",
                     tool=tool_name, error=str(exc), attempt=attempt + 1,
                 )
+                self._record_failure()
 
-            if attempt == 0:
-                await asyncio.sleep(0.2)  # brief back-off before single retry
+            if attempt < self._max_retries - 1:
+                await asyncio.sleep(self._retry_backoff)  # backoff before retry
 
         log.error(
             "opa_unavailable",
