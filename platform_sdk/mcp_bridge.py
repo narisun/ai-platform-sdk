@@ -104,7 +104,7 @@ from langchain_core.tools import StructuredTool
 from mcp.client.sse import sse_client
 from mcp.client.session import ClientSession
 from platform_sdk import get_logger
-from pydantic import Field, create_model  # L2: import at module level, not inside loop
+from pydantic import Field, create_model
 
 # Use structlog logger (supports keyword args) rather than standard logging.getLogger()
 log = get_logger(__name__)
@@ -213,7 +213,7 @@ def _make_invoke_fn(
             return "Tool returned no content."
         except Exception as exc:
             log.error("mcp_tool_error", tool=tool_name, error=str(exc))
-            # L6: returning an error string (rather than re-raising) keeps LangGraph's
+            # Returning an error string (rather than re-raising) keeps LangGraph's
             # tool-call loop alive so the agent can reason about the failure.
             # If this causes undesired reasoning on error content, consider raising
             # ToolException instead to let LangGraph handle it as a hard stop.

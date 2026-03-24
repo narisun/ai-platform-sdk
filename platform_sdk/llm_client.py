@@ -8,15 +8,17 @@ Telemetry is set up separately via setup_telemetry(); this client
 assumes it has already been called.
 
 Example:
-    from platform_sdk import EnterpriseLLMClient, setup_telemetry, configure_logging
+    from platform_sdk import EnterpriseLLMClient, AgentConfig, setup_telemetry, configure_logging
 
     configure_logging()
     setup_telemetry("ai-agents")
-    client = EnterpriseLLMClient()
+    config = AgentConfig.from_env()
+    client = EnterpriseLLMClient(config=config)
     response = await client.generate("complex-routing", messages)
 """
-import os
+from typing import Optional
 from openai import AsyncOpenAI
+from .config import AgentConfig
 from .logging import get_logger
 
 log = get_logger(__name__)
@@ -26,13 +28,16 @@ class EnterpriseLLMClient:
     """
     Async LLM client that routes all calls through the LiteLLM proxy.
 
-    Configuration is read entirely from environment variables — no
-    hardcoded defaults beyond localhost for local development.
+    Configuration is read from ``AgentConfig`` which centralises all
+    environment-variable access.
     """
 
-    def __init__(self) -> None:
-        base_url = os.environ.get("LITELLM_BASE_URL", "http://localhost:4000/v1")
-        api_key = os.environ.get("INTERNAL_API_KEY")
+    def __init__(self, config: Optional[AgentConfig] = None) -> None:
+        if config is None:
+            config = AgentConfig.from_env()
+
+        base_url = config.litellm_base_url
+        api_key = config.internal_api_key
 
         if not api_key:
             raise ValueError(

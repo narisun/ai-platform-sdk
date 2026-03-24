@@ -74,3 +74,21 @@ class ToolBridge(Protocol):
     async def get_langchain_tools(self) -> list:
         """Return LangChain StructuredTool objects for all registered tools."""
         ...
+
+
+@runtime_checkable
+class PortfolioDataSource(Protocol):
+    """Interface for loading portfolio data (clients and signals).
+
+    The default implementation reads from local JSON files.  Tests can inject
+    an in-memory fake that returns predetermined data without touching the
+    filesystem, enabling isolated unit testing of graph nodes.
+    """
+
+    def load_clients(self, rm_id: str) -> list:
+        """Return the client list for the given RM."""
+        ...
+
+    def load_signals(self) -> tuple[dict, dict, dict]:
+        """Return (payments_db, news_db, credit_db) dicts."""
+        ...

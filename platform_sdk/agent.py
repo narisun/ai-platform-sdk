@@ -1,7 +1,7 @@
 """
 Platform SDK — LangGraph ReAct agent factory.
 
-Provides two building blocks:
+Provides three building blocks:
 
   build_agent(tools, config, prompt)
       Standard ReAct agent. Used by the main enterprise agent service and
@@ -11,6 +11,11 @@ Provides two building blocks:
       Same as build_agent but accepts a per-specialist model override.
       Used by orchestrators that run cheap models for data-collection nodes
       and an expensive model only for synthesis.
+
+  make_checkpointer(config)
+      Factory that returns the correct LangGraph checkpointer based on
+      AgentConfig.checkpointer_type.  Centralises the memory-vs-postgres
+      branching that was duplicated in every graph builder.
 
 Design decisions:
 - Temperature is fixed at 0 for deterministic enterprise behaviour.
@@ -22,8 +27,7 @@ Design decisions:
 """
 import dataclasses
 import inspect
-import os
-from typing import List, Optional
+from typing import Optional
 
 from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -47,10 +51,47 @@ else:
 log.debug("langgraph_compat", modifier_kwarg=_MODIFIER_KWARG)
 
 
+def make_checkpointer(config: Optional[AgentConfig] = None):
+    """
+    Create a LangGraph checkpointer based on configuration.
+
+    Centralises the memory-vs-postgres branching that was duplicated in
+    every graph builder (rm-prep, portfolio-watch, etc.).
+
+    Args:
+        config: AgentConfig with checkpointer_type and checkpointer_db_url.
+                Defaults to AgentConfig.from_env().
+
+    Returns:
+        A LangGraph-compatible checkpointer (MemorySaver or AsyncPostgresSaver).
+    """
+    if config is None:
+        config = AgentConfig.from_env()
+
+    if config.checkpointer_type == "postgres" and config.checkpointer_db_url:
+        try:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            checkpointer = AsyncPostgresSaver.from_conn_string(config.checkpointer_db_url)
+            log.info("checkpointer_ready", type="postgres")
+            return checkpointer
+        except ImportError:
+            log.warning(
+                "postgres_checkpointer_unavailable",
+                fallback="memory",
+                reason="langgraph-checkpoint-postgres not installed",
+            )
+
+    from langgraph.checkpoint.memory import MemorySaver
+    checkpointer = MemorySaver()
+    log.info("checkpointer_ready", type="memory")
+    return checkpointer
+
+
 def make_chat_llm(
     model_route: str,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    config: Optional[AgentConfig] = None,
 ) -> "ChatOpenAI":
     """
     Construct a LangChain ChatOpenAI client pointed at the LiteLLM proxy.
@@ -60,14 +101,17 @@ def make_chat_llm(
 
     Args:
         model_route: LiteLLM route name (e.g. "complex-routing").
-        base_url:    LiteLLM proxy URL. Defaults to LITELLM_BASE_URL env var.
-        api_key:     Bearer token. Defaults to INTERNAL_API_KEY env var.
+        base_url:    LiteLLM proxy URL. Falls back to config.litellm_base_url.
+        api_key:     Bearer token. Falls back to config.internal_api_key.
+        config:      AgentConfig. Defaults to AgentConfig.from_env().
 
     Returns:
         Configured ChatOpenAI instance at temperature=0.
     """
-    resolved_base_url = base_url or os.environ.get("LITELLM_BASE_URL", "http://localhost:4000/v1")
-    resolved_api_key = api_key or os.environ.get("INTERNAL_API_KEY", "")
+    if config is None:
+        config = AgentConfig.from_env()
+    resolved_base_url = base_url or config.litellm_base_url
+    resolved_api_key = api_key or config.internal_api_key
     if not resolved_api_key:
         raise ValueError("INTERNAL_API_KEY must be set — see .env.example")
 
@@ -103,25 +147,14 @@ def build_agent(
     if config is None:
         config = AgentConfig.from_env()
 
-    resolved_base_url = base_url or os.environ.get("LITELLM_BASE_URL", "http://localhost:4000/v1")
-    resolved_api_key = api_key or os.environ.get("INTERNAL_API_KEY", "")
-    if not resolved_api_key:
-        raise ValueError("INTERNAL_API_KEY must be set — see .env.example")
-
-    llm = ChatOpenAI(
-        model=config.model_route,
-        api_key=resolved_api_key,
-        base_url=resolved_base_url,
-        temperature=0,
-        max_retries=2,
-    )
+    llm = make_chat_llm(config.model_route, base_url=base_url, api_key=api_key)
 
     log.info("build_agent", model=config.model_route, tools=[t.name for t in tools])
 
     compaction_modifier = make_compaction_modifier(config)
 
-    def _combined_modifier(state) -> List[BaseMessage]:
-        messages: List[BaseMessage] = compaction_modifier(state)
+    def _combined_modifier(state) -> list[BaseMessage]:
+        messages: list[BaseMessage] = compaction_modifier(state)
         if prompt:
             if not messages or not isinstance(messages[0], SystemMessage):
                 messages = [SystemMessage(content=prompt)] + list(messages)

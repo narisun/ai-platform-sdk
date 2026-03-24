@@ -2,11 +2,36 @@
 Platform SDK — Typed configuration dataclasses.
 
 Every tunable parameter for agents and MCP servers is defined here with
-sensible defaults and read from environment variables via from_env().
+sensible defaults and read from environment variables via ``from_env()``.
+
+This module is the **single source of truth** for all environment-variable
+based configuration.  Production code outside this file (and ``auth.py``
+for security secrets) should never call ``os.environ.get`` directly —
+instead, read from the ``AgentConfig`` or ``MCPConfig`` instance.
 """
 import os
 from dataclasses import dataclass
 from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# Helper for reading typed env vars with defaults
+# ---------------------------------------------------------------------------
+
+def _env(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+def _env_int(name: str, default: int) -> int:
+    return int(os.environ.get(name, str(default)))
+
+
+def _env_float(name: str, default: float) -> float:
+    return float(os.environ.get(name, str(default)))
+
+
+def _env_bool(name: str, default: bool = True) -> bool:
+    return os.environ.get(name, str(default).lower()).lower() == "true"
 
 
 @dataclass
@@ -14,8 +39,8 @@ class AgentConfig:
     """
     Configuration for LangGraph agents.
 
-    Covers model routing (including multi-agent tiering), context
-    compaction, session checkpointing, and tool-result caching.
+    Covers model routing (including multi-agent tiering), LLM endpoint,
+    context compaction, session checkpointing, and tool-result caching.
     All fields can be overridden via environment variables.
 
     Example:
@@ -34,6 +59,10 @@ class AgentConfig:
     specialist_model_route: str  = "fast-routing"
     synthesis_model_route: str   = "complex-routing"
 
+    # ---- LLM endpoint (LiteLLM proxy) ----
+    litellm_base_url: str  = "http://localhost:4000/v1"
+    internal_api_key: str  = ""
+
     # ---- Session / checkpointer ----
     # "memory" = MemorySaver (dev/test), "postgres" = PostgresSaver (prod)
     checkpointer_type: str       = "memory"
@@ -51,6 +80,9 @@ class AgentConfig:
     enable_tool_cache: bool     = True
     tool_cache_ttl_seconds: int = 300
 
+    # ---- MCP bridge startup ----
+    mcp_startup_timeout: float = 120.0
+
     def __post_init__(self) -> None:
         """Validate configuration at construction time (fail-fast)."""
         errors: list[str] = []
@@ -67,27 +99,24 @@ class AgentConfig:
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
-        raw_recursion = int(os.environ.get("AGENT_RECURSION_LIMIT", str(cls.recursion_limit)))
+        raw_recursion = _env_int("AGENT_RECURSION_LIMIT", cls.recursion_limit)
         return cls(
-            model_route=os.environ.get("AGENT_MODEL_ROUTE", cls.model_route),
-            summary_model_route=os.environ.get("SUMMARY_MODEL_ROUTE", cls.summary_model_route),
-            router_model_route=os.environ.get("ROUTER_MODEL_ROUTE", cls.router_model_route),
-            specialist_model_route=os.environ.get("SPECIALIST_MODEL_ROUTE", cls.specialist_model_route),
-            synthesis_model_route=os.environ.get("SYNTHESIS_MODEL_ROUTE", cls.synthesis_model_route),
-            checkpointer_type=os.environ.get("CHECKPOINTER_TYPE", cls.checkpointer_type),
-            checkpointer_db_url=os.environ.get("CHECKPOINTER_DB_URL", cls.checkpointer_db_url),
-            enable_compaction=os.environ.get("ENABLE_COMPACTION", "true").lower() == "true",
-            context_token_limit=int(
-                os.environ.get("AGENT_CONTEXT_TOKEN_LIMIT", str(cls.context_token_limit))
-            ),
+            model_route=_env("AGENT_MODEL_ROUTE", cls.model_route),
+            summary_model_route=_env("SUMMARY_MODEL_ROUTE", cls.summary_model_route),
+            router_model_route=_env("ROUTER_MODEL_ROUTE", cls.router_model_route),
+            specialist_model_route=_env("SPECIALIST_MODEL_ROUTE", cls.specialist_model_route),
+            synthesis_model_route=_env("SYNTHESIS_MODEL_ROUTE", cls.synthesis_model_route),
+            litellm_base_url=_env("LITELLM_BASE_URL", cls.litellm_base_url),
+            internal_api_key=_env("INTERNAL_API_KEY", cls.internal_api_key),
+            checkpointer_type=_env("CHECKPOINTER_TYPE", cls.checkpointer_type),
+            checkpointer_db_url=_env("CHECKPOINTER_DB_URL", cls.checkpointer_db_url),
+            enable_compaction=_env_bool("ENABLE_COMPACTION"),
+            context_token_limit=_env_int("AGENT_CONTEXT_TOKEN_LIMIT", cls.context_token_limit),
             recursion_limit=max(1, min(raw_recursion, 50)),
-            max_message_length=int(
-                os.environ.get("MAX_MESSAGE_LENGTH", str(cls.max_message_length))
-            ),
-            enable_tool_cache=os.environ.get("ENABLE_TOOL_CACHE", "true").lower() == "true",
-            tool_cache_ttl_seconds=int(
-                os.environ.get("TOOL_CACHE_TTL", str(cls.tool_cache_ttl_seconds))
-            ),
+            max_message_length=_env_int("MAX_MESSAGE_LENGTH", cls.max_message_length),
+            enable_tool_cache=_env_bool("ENABLE_TOOL_CACHE"),
+            tool_cache_ttl_seconds=_env_int("TOOL_CACHE_TTL", cls.tool_cache_ttl_seconds),
+            mcp_startup_timeout=_env_float("MCP_STARTUP_TIMEOUT", cls.mcp_startup_timeout),
         )
 
 
@@ -97,12 +126,12 @@ class MCPConfig:
     Configuration for FastMCP servers.
 
     Covers OPA policy enforcement, result size limits, service identity,
-    and tool-result caching.
+    database connection, Redis cache, and tool-result caching.
 
     Example:
         config = MCPConfig.from_env()
         opa    = OpaClient(config)
-        cache  = ToolResultCache.from_env(ttl_seconds=config.tool_cache_ttl_seconds)
+        cache  = ToolResultCache.from_config(config)
     """
     # OPA policy engine
     opa_url: str              = "http://localhost:8181/v1/data/mcp/tools/allow"
@@ -115,6 +144,11 @@ class MCPConfig:
     # inject a different environment or role via tool arguments (H3 finding).
     environment: str          = "prod"
     agent_role: str           = "data_analyst_agent"
+    service_name: str         = "mcp-server"
+
+    # Server runtime
+    transport: str            = "sse"
+    port: int                 = 8080
 
     # Tool-result caching
     enable_tool_cache: bool   = True
@@ -129,8 +163,25 @@ class MCPConfig:
     tool_call_timeout: float = 30.0     # timeout for individual MCP tool calls (seconds)
 
     # Database connection pool
+    db_host: str             = "pgvector"
+    db_port: int             = 5432
+    db_user: str             = "admin"
+    db_pass: str             = ""
+    db_name: str             = "ai_memory"
+    db_require_ssl: bool     = False
     # Set to 0 for pgBouncer compatibility (disables prepared statement cache)
     statement_cache_size: int = 1024
+
+    # Redis (tool-result cache backend)
+    redis_host: str          = ""
+    redis_port: int          = 6379
+    redis_password: str      = ""
+
+    # MCP server URLs (used by orchestrator agents for service discovery)
+    salesforce_mcp_url: str  = "http://salesforce-mcp:8081/sse"
+    payments_mcp_url: str    = "http://payments-mcp:8082/sse"
+    news_mcp_url: str        = "http://news-search-mcp:8083/sse"
+    mcp_sse_url: str         = "http://localhost:8080/sse"
 
     _VALID_ENVIRONMENTS = {"dev", "local", "staging", "prod", "test"}
     _VALID_AGENT_ROLES = {
@@ -166,38 +217,34 @@ class MCPConfig:
     def from_env(cls) -> "MCPConfig":
         """Read configuration from environment variables, falling back to defaults."""
         return cls(
-            opa_url=os.environ.get("OPA_URL", cls.opa_url),
-            opa_timeout_seconds=float(
-                os.environ.get("OPA_TIMEOUT", str(cls.opa_timeout_seconds))
-            ),
-            max_result_bytes=int(
-                os.environ.get("MAX_RESULT_BYTES", str(cls.max_result_bytes))
-            ),
-            environment=os.environ.get("ENVIRONMENT", cls.environment),
-            agent_role=os.environ.get("AGENT_ROLE", cls.agent_role),
-            enable_tool_cache=os.environ.get("ENABLE_TOOL_CACHE", "true").lower() == "true",
-            tool_cache_ttl_seconds=int(
-                os.environ.get("TOOL_CACHE_TTL", str(cls.tool_cache_ttl_seconds))
-            ),
-            cb_failure_threshold=int(
-                os.environ.get("CB_FAILURE_THRESHOLD", str(cls.cb_failure_threshold))
-            ),
-            cb_recovery_timeout=float(
-                os.environ.get("CB_RECOVERY_TIMEOUT", str(cls.cb_recovery_timeout))
-            ),
-            opa_max_retries=int(
-                os.environ.get("OPA_MAX_RETRIES", str(cls.opa_max_retries))
-            ),
-            opa_retry_backoff=float(
-                os.environ.get("OPA_RETRY_BACKOFF", str(cls.opa_retry_backoff))
-            ),
-            mcp_reconnect_backoff_cap=float(
-                os.environ.get("MCP_RECONNECT_BACKOFF_CAP", str(cls.mcp_reconnect_backoff_cap))
-            ),
-            tool_call_timeout=float(
-                os.environ.get("TOOL_CALL_TIMEOUT", str(cls.tool_call_timeout))
-            ),
-            statement_cache_size=int(
-                os.environ.get("STATEMENT_CACHE_SIZE", str(cls.statement_cache_size))
-            ),
+            opa_url=_env("OPA_URL", cls.opa_url),
+            opa_timeout_seconds=_env_float("OPA_TIMEOUT", cls.opa_timeout_seconds),
+            max_result_bytes=_env_int("MAX_RESULT_BYTES", cls.max_result_bytes),
+            environment=_env("ENVIRONMENT", cls.environment),
+            agent_role=_env("AGENT_ROLE", cls.agent_role),
+            service_name=_env("SERVICE_NAME", cls.service_name),
+            transport=_env("MCP_TRANSPORT", cls.transport),
+            port=_env_int("PORT", cls.port),
+            enable_tool_cache=_env_bool("ENABLE_TOOL_CACHE"),
+            tool_cache_ttl_seconds=_env_int("TOOL_CACHE_TTL", cls.tool_cache_ttl_seconds),
+            cb_failure_threshold=_env_int("CB_FAILURE_THRESHOLD", cls.cb_failure_threshold),
+            cb_recovery_timeout=_env_float("CB_RECOVERY_TIMEOUT", cls.cb_recovery_timeout),
+            opa_max_retries=_env_int("OPA_MAX_RETRIES", cls.opa_max_retries),
+            opa_retry_backoff=_env_float("OPA_RETRY_BACKOFF", cls.opa_retry_backoff),
+            mcp_reconnect_backoff_cap=_env_float("MCP_RECONNECT_BACKOFF_CAP", cls.mcp_reconnect_backoff_cap),
+            tool_call_timeout=_env_float("TOOL_CALL_TIMEOUT", cls.tool_call_timeout),
+            db_host=_env("DB_HOST", cls.db_host),
+            db_port=_env_int("DB_PORT", cls.db_port),
+            db_user=_env("DB_USER", cls.db_user),
+            db_pass=_env("DB_PASS", cls.db_pass),
+            db_name=_env("DB_NAME", cls.db_name),
+            db_require_ssl=_env_bool("DB_REQUIRE_SSL", False),
+            statement_cache_size=_env_int("STATEMENT_CACHE_SIZE", cls.statement_cache_size),
+            redis_host=_env("REDIS_HOST", cls.redis_host),
+            redis_port=_env_int("REDIS_PORT", cls.redis_port),
+            redis_password=_env("REDIS_PASSWORD", cls.redis_password),
+            salesforce_mcp_url=_env("SALESFORCE_MCP_URL", cls.salesforce_mcp_url),
+            payments_mcp_url=_env("PAYMENTS_MCP_URL", cls.payments_mcp_url),
+            news_mcp_url=_env("NEWS_MCP_URL", cls.news_mcp_url),
+            mcp_sse_url=_env("MCP_SSE_URL", cls.mcp_sse_url),
         )

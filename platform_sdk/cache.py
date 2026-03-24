@@ -36,19 +36,15 @@ Key design decisions:
 import hashlib
 import json
 import os
-import time
 from functools import wraps
 from typing import Callable, Optional
 
 from .logging import get_logger
+from .resilience import CircuitBreaker
 
 log = get_logger(__name__)
 
 _KEY_PREFIX = "tool_cache:"
-
-# Circuit-breaker defaults
-_CB_FAILURE_THRESHOLD = 5     # consecutive failures before opening the circuit
-_CB_RECOVERY_TIMEOUT  = 30.0  # seconds before trying Redis again
 
 
 class ToolResultCache:
@@ -58,40 +54,15 @@ class ToolResultCache:
     Gracefully degrades: when constructed with redis=None (i.e. Redis is not
     configured), get/set are no-ops so callers do not need special-case logic.
 
-    Circuit breaker: after _CB_FAILURE_THRESHOLD consecutive errors, the cache
-    bypasses Redis for _CB_RECOVERY_TIMEOUT seconds before probing again.
+    Circuit breaker (via reusable CircuitBreaker): after consecutive errors,
+    the cache bypasses Redis for a recovery period before probing again.
     This prevents Redis outages from adding latency to every tool call.
     """
 
     def __init__(self, redis_client, ttl_seconds: int = 300) -> None:  # type: ignore[valid-type]
         self._redis = redis_client   # redis.asyncio.Redis or None
         self._ttl   = ttl_seconds
-        # Circuit-breaker state
-        self._consecutive_failures = 0
-        self._circuit_open_until: float = 0.0  # monotonic timestamp
-
-    def _is_circuit_open(self) -> bool:
-        if self._consecutive_failures < _CB_FAILURE_THRESHOLD:
-            return False
-        if time.monotonic() >= self._circuit_open_until:
-            # Recovery timeout elapsed — allow a probe
-            return False
-        return True
-
-    def _record_success(self) -> None:
-        if self._consecutive_failures > 0:
-            log.info("cache_circuit_closed", after_failures=self._consecutive_failures)
-        self._consecutive_failures = 0
-
-    def _record_failure(self) -> None:
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= _CB_FAILURE_THRESHOLD:
-            self._circuit_open_until = time.monotonic() + _CB_RECOVERY_TIMEOUT
-            log.warning(
-                "cache_circuit_opened",
-                failures=self._consecutive_failures,
-                recovery_seconds=_CB_RECOVERY_TIMEOUT,
-            )
+        self._cb = CircuitBreaker(name="redis_cache")
 
     # ------------------------------------------------------------------
     # Public API
@@ -99,31 +70,31 @@ class ToolResultCache:
 
     async def get(self, key: str) -> Optional[str]:
         """Return cached value or None (also None on any Redis error)."""
-        if self._redis is None or self._is_circuit_open():
+        if self._redis is None or self._cb.is_open:
             return None
         try:
             value = await self._redis.get(key)
-            self._record_success()
+            self._cb.record_success()
             if value is not None:
                 log.info("cache_hit", key=key)
                 return value.decode() if isinstance(value, bytes) else value
             log.debug("cache_miss", key=key)
             return None
         except Exception as exc:
-            self._record_failure()
+            self._cb.record_failure()
             log.warning("cache_get_error", key=key, error=str(exc))
             return None
 
     async def set(self, key: str, value: str) -> None:
         """Store value with TTL (silently ignores any Redis error)."""
-        if self._redis is None or self._is_circuit_open():
+        if self._redis is None or self._cb.is_open:
             return
         try:
             await self._redis.setex(key, self._ttl, value)
-            self._record_success()
+            self._cb.record_success()
             log.debug("cache_set", key=key, ttl=self._ttl)
         except Exception as exc:
-            self._record_failure()
+            self._cb.record_failure()
             log.warning("cache_set_error", key=key, error=str(exc))
 
     # ------------------------------------------------------------------
@@ -131,17 +102,50 @@ class ToolResultCache:
     # ------------------------------------------------------------------
 
     @classmethod
+    def from_config(cls, config: "MCPConfig", ttl_seconds: int = 300) -> Optional["ToolResultCache"]:
+        """
+        Construct a ToolResultCache from a centralised MCPConfig.
+
+        Preferred over ``from_env()`` — reads Redis connection details from
+        the config dataclass rather than calling ``os.environ`` directly.
+
+        Returns None when ``config.redis_host`` is empty so callers can
+        treat a missing Redis as 'caching disabled' without branching logic.
+        """
+        # Avoid circular import — MCPConfig is only used for type checking here.
+        if not config.redis_host:
+            log.info("tool_cache_disabled", reason="redis_host not set")
+            return None
+
+        try:
+            import redis.asyncio as aioredis  # type: ignore[import]
+
+            password = config.redis_password or None
+
+            client = aioredis.Redis(
+                host=config.redis_host,
+                port=config.redis_port,
+                password=password,
+                decode_responses=False,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+            )
+            log.info("tool_cache_ready", host=config.redis_host, port=config.redis_port, ttl=ttl_seconds)
+            return cls(client, ttl_seconds=ttl_seconds)
+        except ImportError:
+            log.warning("redis_not_installed", fallback="cache_disabled")
+            return None
+
+    @classmethod
     def from_env(cls, ttl_seconds: int = 300) -> Optional["ToolResultCache"]:
         """
         Construct a ToolResultCache from environment variables.
 
+        .. deprecated:: Prefer ``from_config(config)`` for centralised
+           configuration.  This method is retained for backward compatibility.
+
         Returns None when REDIS_HOST is not set so callers can treat a
         missing Redis as 'caching disabled' without branching logic.
-
-        Environment variables:
-            REDIS_HOST      — required; if absent returns None
-            REDIS_PORT      — optional, default 6379
-            REDIS_PASSWORD  — optional, default empty (no auth)
         """
         redis_host = os.environ.get("REDIS_HOST", "")
         if not redis_host:
@@ -149,8 +153,6 @@ class ToolResultCache:
             return None
 
         try:
-            # Lazy import so services without redis[asyncio] installed can
-            # still import the rest of this module (they just can't use cache).
             import redis.asyncio as aioredis  # type: ignore[import]
 
             port     = int(os.environ.get("REDIS_PORT", "6379"))
@@ -220,6 +222,9 @@ def cached_tool(cache: Optional[ToolResultCache]) -> Callable:
         async def my_tool(query: str, session_id: str) -> str:
             ...
     """
+    # Import once at decorator-creation time, not inside the per-call wrapper.
+    from .authorized_tool import is_error_response
+
     def decorator(fn: Callable) -> Callable:
         if cache is None:
             # No-op wrapper — identical behaviour, no overhead
@@ -237,7 +242,6 @@ def cached_tool(cache: Optional[ToolResultCache]) -> Callable:
 
             # Never cache error responses — they should be retried fresh.
             # Recognises both legacy "ERROR:" prefix and new JSON {"error": ...} format.
-            from .authorized_tool import is_error_response
             if not is_error_response(result):
                 await cache.set(key, result)
 
