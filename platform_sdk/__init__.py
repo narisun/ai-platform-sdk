@@ -89,8 +89,6 @@ from .base import Application, Agent, McpService
 from .services import AgentBuilder, ChatLLMFactory, CheckpointerFactory, ApiKeyVerifier
 
 # MCP Bridge — optional dependency (requires `mcp` package).
-# Consumers that don't connect to MCP servers (e.g. portfolio-watch) can
-# import the SDK without installing the `mcp` package.
 try:
     from .mcp_bridge import MCPToolBridge, reset_session_id, set_session_id
 except ImportError:

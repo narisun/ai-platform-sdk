@@ -56,7 +56,7 @@ def make_checkpointer(config: Optional[AgentConfig] = None):
     Create a LangGraph checkpointer based on configuration.
 
     Centralises the memory-vs-postgres branching that was duplicated in
-    every graph builder (rm-prep, portfolio-watch, etc.).
+    every graph builder.
 
     Args:
         config: AgentConfig with checkpointer_type and checkpointer_db_url.

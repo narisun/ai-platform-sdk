@@ -77,7 +77,7 @@ class MCPConfig:
     _VALID_ENVIRONMENTS = {"dev", "local", "staging", "prod", "test"}
     _VALID_AGENT_ROLES = {
         "commercial_banking_agent", "data_analyst_agent", "compliance_agent",
-        "rm_prep_agent", "portfolio_watch_agent",
+        "analytics_agent",
     }
 
     def __post_init__(self) -> None:
