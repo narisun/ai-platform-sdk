@@ -4,7 +4,12 @@ Enterprise AI Platform SDK — public API surface.
 Observability:
     configure_logging()              — structlog JSON logging
     get_logger(name)                 — structured logger
-    setup_telemetry(svc)             — OpenTelemetry init (idempotent)
+    setup_telemetry(svc)             — OpenTelemetry + LangFuse init (idempotent)
+    get_langfuse()                   — fetch LangFuse client (or None)
+    get_langfuse_callback_handler()  — LangChain/LangGraph callback handler
+
+Prompt management (via LangFuse):
+    PromptManager                    — centralized prompt management with caching
 
 LLM client:
     EnterpriseLLMClient              — thin LiteLLM proxy wrapper
@@ -34,6 +39,17 @@ Agent factories:
         Same as build_agent but accepts a per-specialist model override.
         Used by orchestrators for model tiering (cheap specialists,
         expensive synthesis).
+
+OOP base classes:
+    Application                      — abstract root for all services
+    Agent                            — base class for LangGraph agents
+    McpService                       — base class for FastMCP servers
+
+Service classes:
+    AgentBuilder                     — wraps build_agent / build_specialist_agent
+    ChatLLMFactory                   — creates ChatOpenAI instances
+    CheckpointerFactory              — creates memory / postgres checkpointers
+    ApiKeyVerifier                   — wraps make_api_key_verifier as a class
 """
 from .agent import build_agent, build_specialist_agent, make_chat_llm, make_checkpointer
 from .auth import AgentContext, assert_secrets_configured
@@ -53,10 +69,11 @@ from .metrics import (
     record_mcp_tool_call,
 )
 from .prompts import PromptLoader
+from .prompt_manager import PromptManager
 from .protocols import Authorizer, CacheStore, LLMClient, PortfolioDataSource, ToolBridge
 from .resilience import CircuitBreaker
 from .security import OpaClient, make_api_key_verifier
-from .telemetry import setup_telemetry
+from .telemetry import setup_telemetry, get_langfuse, get_langfuse_callback_handler, flush_langfuse
 from .models import (
     ErrorDetail,
     ToolResponse,
@@ -66,6 +83,10 @@ from .models import (
     PaymentSummaryData,
     NewsSummaryData,
 )
+
+# OOP base classes — Application hierarchy and service wrappers.
+from .base import Application, Agent, McpService
+from .services import AgentBuilder, ChatLLMFactory, CheckpointerFactory, ApiKeyVerifier
 
 # MCP Bridge — optional dependency (requires `mcp` package).
 # Consumers that don't connect to MCP servers (e.g. portfolio-watch) can
@@ -82,6 +103,11 @@ __all__ = [
     "configure_logging",
     "get_logger",
     "setup_telemetry",
+    "get_langfuse",
+    "get_langfuse_callback_handler",
+    "flush_langfuse",
+    # Prompt management
+    "PromptManager",
     # LLM client
     "EnterpriseLLMClient",
     # Configuration
@@ -119,12 +145,21 @@ __all__ = [
     "CircuitBreaker",
     # Prompt loading
     "PromptLoader",
-    # MCP Server base
+    # MCP Server base (legacy — prefer McpService for new servers)
     "BaseMCPServer",
     "BaseResources",
     "create_base_resources",
     "make_health_router",
-    # Agent factories
+    # OOP base classes
+    "Application",
+    "Agent",
+    "McpService",
+    # Service classes
+    "AgentBuilder",
+    "ChatLLMFactory",
+    "CheckpointerFactory",
+    "ApiKeyVerifier",
+    # Agent factories (legacy — prefer AgentBuilder for new code)
     "build_agent",
     "build_specialist_agent",
     "make_chat_llm",

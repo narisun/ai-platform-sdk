@@ -2,7 +2,11 @@
 Platform SDK — OpenTelemetry metrics for circuit breakers, OPA, and caching.
 
 Exposes key operational metrics as OpenTelemetry instruments so ops teams
-can create alerts and dashboards for service health.
+can create alerts and dashboards for infrastructure health.
+
+LLM-specific observability (token counts, cost, latency) is handled by LangFuse,
+which is initialized via setup_telemetry(). These OTel metrics cover infrastructure
+health and can be consumed by any OTel-compatible backend (Grafana, Datadog, etc.).
 
 Metrics exposed:
     cache_circuit_breaker_state (gauge)       - 0=closed, 1=open
