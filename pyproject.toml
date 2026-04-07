@@ -12,16 +12,19 @@ dependencies = [
     "opentelemetry-sdk>=1.24.0",
     "opentelemetry-exporter-otlp>=1.24.0",
     "opentelemetry-instrumentation-openai>=0.25.0",
+    # OpenLLMetry — auto-instruments LangChain/LangGraph via OTel (vendor-agnostic)
+    "opentelemetry-instrumentation-langchain>=0.30.0",
     "structlog>=24.1.0",
-    # Observability — LangFuse for LLM observability and prompt management
-    "langfuse>=2.0.0,<3.0.0",
+    # LangFuse — used ONLY for prompt management (versioning/retrieval).
+    # Trace collection goes through OTel Collector, not the LangFuse SDK.
+    "langfuse>=2.0.0",
     # Security — OPA client and API key verifier
     "httpx>=0.27.0",
     # Caching — Redis-backed tool result cache
     "redis[asyncio]>=5.0.0",
     # Compaction — accurate token counting
     "tiktoken>=0.7.0",
-    # Agent factory (langchain required by langfuse CallbackHandler integration)
+    # Agent factory (LangChain/LangGraph orchestration)
     "langchain>=0.2.0,<1.0.0",
     "langchain-openai>=0.1.0",
     "langgraph>=0.2.0",

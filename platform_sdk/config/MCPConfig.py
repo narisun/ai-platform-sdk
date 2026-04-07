@@ -74,7 +74,7 @@ class MCPConfig:
     news_mcp_url: str        = "http://news-search-mcp:8083/sse"
     mcp_sse_url: str         = "http://localhost:8080/sse"
 
-    _VALID_ENVIRONMENTS = {"dev", "local", "staging", "prod", "test"}
+    _VALID_ENVIRONMENTS = {"dev", "local", "staging", "prod", "production", "test"}
     _VALID_AGENT_ROLES = {
         "commercial_banking_agent", "data_analyst_agent", "compliance_agent",
         "analytics_agent",

@@ -145,7 +145,16 @@ ROLE_RANK: dict[str, int] = {
 
 @dataclasses.dataclass(frozen=True)
 class AgentContext:
-    """Verified and parsed identity + authorization claims for one RM session."""
+    """Verified and parsed identity + authorization claims for one RM session.
+
+    Two layers of identity:
+      - Service identity (rm_id, role, team_id): identifies the calling agent/service
+      - User identity (user_email, user_role): identifies the authenticated human user
+        from the OAuth provider (Auth0). Flows through the entire stack as part of
+        the HMAC-signed context — never as plaintext tool parameters.
+
+    user_role values: "admin", "analyst", "viewer" (from Auth0 custom claims)
+    """
 
     rm_id: str
     rm_name: str
@@ -154,10 +163,20 @@ class AgentContext:
     assigned_account_ids: tuple[str, ...]  # empty tuple = no row restriction
     compliance_clearance: tuple[str, ...]
 
+    # ── User identity (from OAuth provider) ──────────────────────────────────
+    user_email: str = ""
+    user_role: str = ""    # "admin" | "analyst" | "viewer"
+
+    # Valid OAuth roles — enforced at construction and deserialization
+    _VALID_USER_ROLES = frozenset({"admin", "analyst", "viewer", ""})
+
     def __post_init__(self) -> None:
         """Fail-closed: empty clearance defaults to minimum privilege (standard only)."""
         if not self.compliance_clearance:
             object.__setattr__(self, 'compliance_clearance', ('standard',))
+        # Normalize unknown user_role to empty (minimum privilege)
+        if self.user_role and self.user_role not in self._VALID_USER_ROLES:
+            object.__setattr__(self, 'user_role', '')
 
     # ── Serialization ──────────────────────────────────────────────────────────
 
@@ -169,6 +188,8 @@ class AgentContext:
             "team_id": self.team_id,
             "assigned_account_ids": list(self.assigned_account_ids),
             "compliance_clearance": list(self.compliance_clearance),
+            "user_email": self.user_email,
+            "user_role": self.user_role,
         }
 
     def to_header_value(self) -> str:
@@ -197,6 +218,8 @@ class AgentContext:
             team_id=data.get("team_id", ""),
             assigned_account_ids=tuple(data.get("assigned_account_ids", [])),
             compliance_clearance=tuple(data.get("compliance_clearance", ["standard"])),
+            user_email=data.get("user_email", ""),
+            user_role=data.get("user_role", ""),
         )
 
     @classmethod
@@ -230,6 +253,8 @@ class AgentContext:
             team_id=payload.get("team_id", ""),
             assigned_account_ids=tuple(payload.get("assigned_account_ids", [])),
             compliance_clearance=tuple(payload.get("compliance_clearance", ["standard"])),
+            user_email=payload.get("user_email", ""),
+            user_role=payload.get("user_role", ""),
         )
 
     @classmethod

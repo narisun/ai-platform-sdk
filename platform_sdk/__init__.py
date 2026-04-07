@@ -4,9 +4,9 @@ Enterprise AI Platform SDK — public API surface.
 Observability:
     configure_logging()              — structlog JSON logging
     get_logger(name)                 — structured logger
-    setup_telemetry(svc)             — OpenTelemetry + LangFuse init (idempotent)
-    get_langfuse()                   — fetch LangFuse client (or None)
-    get_langfuse_callback_handler()  — LangChain/LangGraph callback handler
+    setup_telemetry(svc)             — OpenTelemetry tracing + auto-instrumentation
+    get_langfuse()                   — LangFuse client for prompt management (or None)
+    get_langfuse_callback_handler()  — DEPRECATED: always returns None (traces via OTel)
 
 Prompt management (via LangFuse):
     PromptManager                    — centralized prompt management with caching
@@ -90,11 +90,19 @@ from .services import AgentBuilder, ChatLLMFactory, CheckpointerFactory, ApiKeyV
 
 # MCP Bridge — optional dependency (requires `mcp` package).
 try:
-    from .mcp_bridge import MCPToolBridge, reset_session_id, set_session_id
+    from .mcp_bridge import (
+        MCPToolBridge,
+        reset_session_id,
+        set_session_id,
+        set_user_auth_token,
+        reset_user_auth_token,
+    )
 except ImportError:
     MCPToolBridge = None  # type: ignore[assignment,misc]
     set_session_id = None  # type: ignore[assignment]
     reset_session_id = None  # type: ignore[assignment]
+    set_user_auth_token = None  # type: ignore[assignment]
+    reset_user_auth_token = None  # type: ignore[assignment]
 
 __all__ = [
     # Observability
@@ -174,4 +182,6 @@ __all__ = [
     "MCPToolBridge",
     "set_session_id",
     "reset_session_id",
+    "set_user_auth_token",
+    "reset_user_auth_token",
 ]
