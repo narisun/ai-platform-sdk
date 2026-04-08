@@ -60,6 +60,13 @@ class AgentConfig:
     # ---- MCP bridge startup ----
     mcp_startup_timeout: float = 120.0
 
+    # ---- Synthesis settings ----
+    # Maximum number of data points per chart component.  Large arrays (40+
+    # items) often cause malformed structured output from the LLM.  The value
+    # is forwarded to the synthesis node via make_synthesis_node() and also
+    # rendered into the synthesis system prompt so the LLM knows the limit.
+    chart_max_data_points: int = 20
+
     def __post_init__(self) -> None:
         """Validate configuration at construction time (fail-fast)."""
         errors: list[str] = []
@@ -95,4 +102,5 @@ class AgentConfig:
             enable_tool_cache=_env_bool("ENABLE_TOOL_CACHE"),
             tool_cache_ttl_seconds=_env_int("TOOL_CACHE_TTL", cls.tool_cache_ttl_seconds),
             mcp_startup_timeout=_env_float("MCP_STARTUP_TIMEOUT", cls.mcp_startup_timeout),
+            chart_max_data_points=_env_int("CHART_MAX_DATA_POINTS", cls.chart_max_data_points),
         )

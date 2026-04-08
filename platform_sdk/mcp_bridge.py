@@ -20,7 +20,7 @@ come from the server's trusted session context.
 
 Two complementary mechanisms provide it:
 
-1. Per-bridge injection (Chainlit path):
+1. Per-bridge injection (per-session path):
    Pass session_id= to MCPToolBridge.__init__().  The value is captured in
    every invoke closure built by get_langchain_tools(), so the LLM's
    session_id argument is silently overridden on every call.
@@ -33,9 +33,9 @@ Two complementary mechanisms provide it:
 Connection lifecycle note
 ─────────────────────────
 The MCP sse_client() uses anyio.create_task_group() internally, which
-creates a cancel scope that is *owned by the calling task*.  Chainlit
-runs on_chat_start and on_chat_end in different asyncio tasks, so if the
-AsyncExitStack were managed directly in those callbacks the scope-exit
+creates a cancel scope that is *owned by the calling task*.  Some async
+frameworks run setup and teardown callbacks in different asyncio tasks, so
+if the AsyncExitStack were managed directly in those callbacks the scope-exit
 would happen in a different task than the scope-entry — AnyIO raises:
 
     "Attempted to exit cancel scope in a different task than it was
@@ -163,19 +163,79 @@ _JSON_TYPE_MAP: dict[str, type] = {
 }
 
 
+def _resolve_field_python_type(field_schema: dict, root_schema: dict, tool_name: str, field_name: str) -> type:
+    """
+    Resolve a single JSON Schema field definition to a Python type.
+
+    Handles:
+    - Primitive types (string, integer, number, boolean, object, array)
+    - $ref references (resolved against root_schema)
+    - allOf / anyOf / oneOf (mapped to dict; logged as a warning)
+    - Unknown types (mapped to str; logged as a warning)
+    """
+    # Resolve $ref first
+    if "$ref" in field_schema:
+        ref_path = field_schema["$ref"].lstrip("#/").split("/")
+        resolved = root_schema
+        try:
+            for part in ref_path:
+                resolved = resolved[part]
+            return _resolve_field_python_type(resolved, root_schema, tool_name, field_name)
+        except (KeyError, TypeError):
+            log.warning(
+                "json_schema_ref_unresolvable",
+                tool=tool_name,
+                field=field_name,
+                ref=field_schema["$ref"],
+                defaulting_to="dict",
+            )
+            return dict
+
+    # allOf / anyOf / oneOf — too complex to map precisely; use dict
+    for combinator in ("allOf", "anyOf", "oneOf"):
+        if combinator in field_schema:
+            log.warning(
+                "json_schema_combinator_type",
+                tool=tool_name,
+                field=field_name,
+                combinator=combinator,
+                defaulting_to="dict",
+                hint="Consider narrowing the schema or handling this field manually.",
+            )
+            return dict
+
+    json_type = field_schema.get("type", "string")
+    mapped = _JSON_TYPE_MAP.get(json_type)
+    if mapped is None:
+        log.warning(
+            "json_schema_unknown_type",
+            tool=tool_name,
+            field=field_name,
+            json_type=json_type,
+            defaulting_to="str",
+            hint="Add this type to _JSON_TYPE_MAP or handle it in _resolve_field_python_type.",
+        )
+        return str
+    return mapped
+
+
 def _build_args_model(tool_name: str, input_schema: dict) -> type:
     """
     Dynamically create a Pydantic BaseModel from a JSON Schema object.
 
     This makes the MCP bridge truly generic — it works with any tool
     regardless of its parameter names or types.
+
+    Handles primitive types, $ref references, and allOf/anyOf/oneOf combinators.
+    Unknown types default to str/dict with a logged warning rather than silently
+    failing at runtime when the LLM passes an argument the schema doesn't expect.
     """
     fields: dict[str, Any] = {}
     properties = input_schema.get("properties", {})
     required_fields = set(input_schema.get("required", []))
 
     for field_name, field_schema in properties.items():
-        python_type = _JSON_TYPE_MAP.get(field_schema.get("type", "string"), str)
+        python_type = _resolve_field_python_type(field_schema, input_schema, tool_name, field_name)
         description = field_schema.get("description", "")
         if field_name in required_fields:
             fields[field_name] = (python_type, Field(..., description=description))
@@ -278,8 +338,8 @@ class MCPToolBridge:
     The SSE connection (and all AnyIO cancel scopes it creates) is owned by
     a single background asyncio Task (_reconnect_loop).  connect() and
     disconnect() signal that task via Events so they are safe to call from
-    any other task — which is required for Chainlit, where on_chat_start
-    and on_chat_end run in different asyncio tasks.
+    any other task — which is required when setup and teardown run in
+    different asyncio tasks (e.g. FastAPI lifespan, per-request contexts).
 
     Auto-reconnect
     ──────────────
@@ -315,7 +375,7 @@ class MCPToolBridge:
             session_id:    Trusted session UUID for this bridge instance.
                            When set, all execute_read_query calls will use this
                            value as session_id, overriding whatever the LLM passes.
-                           Use this for per-session bridges (e.g. Chainlit).
+                           Use this for per-session bridges.
                            For shared bridges (e.g. REST API) use set_session_id()
                            ContextVar injection instead.
         """
@@ -499,14 +559,20 @@ class MCPToolBridge:
         Each tool's JSON Schema is used to build a typed Pydantic model,
         so LangGraph can validate arguments before dispatching.
 
-        Requires an active session (call connect() first and ensure
-        is_connected is True before calling this method).
+        Requires an active session.  If the bridge is in a degraded (not yet
+        connected) state — for example when the MCP server has not started yet
+        and the startup timeout elapsed — this method returns an empty list
+        instead of raising.  The auto-reconnect loop keeps running in the
+        background; call get_langchain_tools() again once is_connected is True.
         """
         if not self._session:
-            raise RuntimeError(
-                f"MCPToolBridge for {self.sse_url} is not connected. "
-                "Ensure connect() has been called and the MCP server is reachable."
+            log.warning(
+                "mcp_tools_unavailable",
+                url=self.sse_url,
+                reason="bridge not connected — returning empty tool list; "
+                       "reconnect loop is retrying in the background",
             )
+            return []
 
         mcp_tools = await self._session.list_tools()
         langchain_tools: list[StructuredTool] = []

@@ -73,20 +73,26 @@ def _get_previous_jwt_secret() -> str | None:
 
 
 def assert_secrets_configured(environment: str | None = None) -> None:
-    """Refuse to proceed if secrets are still defaults in a prod environment.
+    """Refuse to proceed if secrets are still defaults in any non-dev environment.
 
     Call this during service startup (lifespan or __main__) to fail fast
     rather than serving requests with insecure defaults.
 
     Raises:
-        RuntimeError: if JWT_SECRET is the default in a prod environment.
+        RuntimeError: if JWT_SECRET is the default in any environment other
+                      than "dev" (e.g. "prod", "staging", "uat", "test").
+
+    Note: Checking only for "prod" was insufficient — staging environments
+    that mirror production data but omit ENVIRONMENT=prod would silently use
+    the default secret, making forged X-Agent-Context headers possible.
     """
     env = environment or os.environ.get("ENVIRONMENT", "prod")
     secret = _get_jwt_secret()
-    if env == "prod" and secret == _DEFAULT_DEV_SECRET:
+    if env != "dev" and secret == _DEFAULT_DEV_SECRET:
         raise RuntimeError(
-            "JWT_SECRET has not been rotated from the default value in a "
-            "prod environment.  Set JWT_SECRET to a strong random secret."
+            f"JWT_SECRET has not been rotated from the default value in the "
+            f"'{env}' environment.  Set JWT_SECRET to a strong random secret.  "
+            f"If running locally, set ENVIRONMENT=dev to suppress this check."
         )
 
 

@@ -1,7 +1,7 @@
 """
 Platform SDK — LangGraph ReAct agent factory.
 
-Provides three building blocks:
+Provides four building blocks:
 
   build_agent(tools, config, prompt)
       Standard ReAct agent. Used by the main enterprise agent service and
@@ -13,14 +13,22 @@ Provides three building blocks:
       and an expensive model only for synthesis.
 
   make_checkpointer(config)
-      Factory that returns the correct LangGraph checkpointer based on
-      AgentConfig.checkpointer_type.  Centralises the memory-vs-postgres
-      branching that was duplicated in every graph builder.
+      Synchronous factory — returns the correct LangGraph checkpointer but
+      does NOT call setup().  Use only when checkpoint tables are guaranteed
+      to already exist (e.g. tests with a pre-migrated database).
+
+  setup_checkpointer(config)  [async]
+      Async factory — creates AND initialises the checkpointer.  This is
+      the correct function to call from a FastAPI lifespan or any async
+      startup context.  It calls checkpointer.setup() for Postgres savers,
+      which creates the checkpoint tables if they do not already exist.
 
 Design decisions:
 - Temperature is fixed at 0 for deterministic enterprise behaviour.
 - Compaction + system prompt are composed into a single state_modifier
   because LangGraph only accepts one modifier argument.
+- System prompt is prepended BEFORE compaction runs so the system message
+  is always present when trim_messages evaluates include_system=True.
 - LangGraph version compatibility is detected at import time via
   inspect.signature so the code works without knowing which exact
   version is installed.
@@ -53,7 +61,7 @@ log.debug("langgraph_compat", modifier_kwarg=_MODIFIER_KWARG)
 
 def make_checkpointer(config: Optional[AgentConfig] = None):
     """
-    Create a LangGraph checkpointer based on configuration.
+    Create a LangGraph checkpointer based on configuration (synchronous).
 
     Centralises the memory-vs-postgres branching that was duplicated in
     every graph builder.
@@ -64,6 +72,11 @@ def make_checkpointer(config: Optional[AgentConfig] = None):
 
     Returns:
         A LangGraph-compatible checkpointer (MemorySaver or AsyncPostgresSaver).
+
+    WARNING: For Postgres checkpointers this does NOT call checkpointer.setup(),
+    so the checkpoint tables may not exist yet.  Prefer ``setup_checkpointer``
+    from an async context (e.g. FastAPI lifespan) which calls setup() for you.
+    Use make_checkpointer() only when tables are guaranteed to already exist.
     """
     if config is None:
         config = AgentConfig.from_env()
@@ -84,6 +97,39 @@ def make_checkpointer(config: Optional[AgentConfig] = None):
     from langgraph.checkpoint.memory import MemorySaver
     checkpointer = MemorySaver()
     log.info("checkpointer_ready", type="memory")
+    return checkpointer
+
+
+async def setup_checkpointer(config: Optional[AgentConfig] = None):
+    """
+    Async factory — creates AND initialises the checkpointer.
+
+    This is the correct entry point from async contexts (FastAPI lifespan,
+    pytest fixtures with event loops, etc.).  It calls ``checkpointer.setup()``
+    for Postgres savers, which creates the checkpoint tables if they do not
+    already exist.  Without this call the first multi-turn request will fail
+    with a "relation does not exist" error.
+
+    Args:
+        config: AgentConfig with checkpointer_type and checkpointer_db_url.
+                Defaults to AgentConfig.from_env().
+
+    Returns:
+        An initialised LangGraph-compatible checkpointer.
+
+    Example (FastAPI lifespan)::
+
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            app.state.checkpointer = await setup_checkpointer()
+            graph = build_analytics_graph(bridges, config,
+                                          checkpointer=app.state.checkpointer)
+            yield
+    """
+    checkpointer = make_checkpointer(config)
+    if hasattr(checkpointer, "setup"):
+        await checkpointer.setup()
+        log.info("checkpointer_setup_complete", type=type(checkpointer).__name__)
     return checkpointer
 
 
@@ -154,11 +200,18 @@ def build_agent(
     compaction_modifier = make_compaction_modifier(config)
 
     def _combined_modifier(state) -> list[BaseMessage]:
-        messages: list[BaseMessage] = compaction_modifier(state)
+        # 1. Extract raw message list from state (list or dict depending on LangGraph version)
+        messages: list[BaseMessage] = (
+            state if isinstance(state, list) else state.get("messages", [])
+        )
+        # 2. Prepend system prompt BEFORE compaction so trim_messages can protect it
+        #    via include_system=True.  If system prompt is added after compaction, a
+        #    long conversation could exceed the token limit on the very next step.
         if prompt:
             if not messages or not isinstance(messages[0], SystemMessage):
                 messages = [SystemMessage(content=prompt)] + list(messages)
-        return messages
+        # 3. Run compaction — system message is now present and will be preserved
+        return compaction_modifier(messages)
 
     if _MODIFIER_KWARG is not None:
         return create_react_agent(llm, tools, **{_MODIFIER_KWARG: _combined_modifier})

@@ -51,7 +51,7 @@ Service classes:
     CheckpointerFactory              — creates memory / postgres checkpointers
     ApiKeyVerifier                   — wraps make_api_key_verifier as a class
 """
-from .agent import build_agent, build_specialist_agent, make_chat_llm, make_checkpointer
+from .agent import build_agent, build_specialist_agent, make_chat_llm, make_checkpointer, setup_checkpointer
 from .auth import AgentContext, assert_secrets_configured
 from .authorized_tool import authorized_tool, is_error_response, make_error
 from .bridge_health import BridgeHealthMatrix
@@ -170,6 +170,7 @@ __all__ = [
     "build_specialist_agent",
     "make_chat_llm",
     "make_checkpointer",
+    "setup_checkpointer",
     # Response models
     "ErrorDetail",
     "ToolResponse",

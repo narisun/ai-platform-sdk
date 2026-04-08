@@ -40,6 +40,21 @@ class CircuitBreaker:
     Thread/async safety: the state fields are simple scalars updated
     atomically by CPython's GIL.  No lock is needed for single-process
     async servers (which is how all MCP servers and agents run).
+
+    Multi-worker limitation
+    ───────────────────────
+    Circuit state is stored in process memory.  In multi-worker deployments
+    (multiple Uvicorn/Gunicorn workers or Kubernetes replicas), each worker
+    has an independent copy of this object.  Worker A may open the circuit
+    after N failures while Workers B and C continue sending requests — the
+    circuit-open protection is effectively limited to 1/num_workers of traffic.
+
+    This is acceptable for the current single-worker deployment model.  If
+    you scale to multiple workers, back the circuit state in a shared store
+    (e.g. Redis via the existing ToolResultCache infrastructure) using atomic
+    increment and compare-and-swap operations.  Track this as a known limitation
+    until then and monitor ``circuit_opened`` log events in your observability
+    platform to detect cascading failure patterns.
     """
 
     name: str

@@ -32,7 +32,7 @@ Design decisions:
 - When compaction fires, an INFO log is emitted with before/after token counts
   so operators can tune context_token_limit.
 """
-from typing import Callable, List, Sequence
+from typing import Callable, List, Optional, Sequence
 
 from langchain_core.messages import BaseMessage, SystemMessage
 
@@ -84,7 +84,19 @@ def _make_token_counter() -> Callable[[Sequence[BaseMessage]], int]:
         return _heuristic_count
 
 
-_token_counter = _make_token_counter()
+# Lazily initialised on first use so:
+# (a) import-time warnings don't fire in environments without tiktoken,
+# (b) tests that monkeypatch the env or install tiktoken after import get
+#     the correct backend without restarting the process.
+_token_counter: Optional[Callable[[Sequence[BaseMessage]], int]] = None
+
+
+def _get_token_counter() -> Callable[[Sequence[BaseMessage]], int]:
+    """Return the module-level token counter, initialising it on first call."""
+    global _token_counter
+    if _token_counter is None:
+        _token_counter = _make_token_counter()
+    return _token_counter
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +137,8 @@ def make_compaction_modifier(config: AgentConfig) -> Callable:
             state if isinstance(state, list) else state.get("messages", [])
         )
 
-        before_tokens = _token_counter(messages)
+        counter = _get_token_counter()
+        before_tokens = counter(messages)
 
         if before_tokens <= limit:
             return messages
@@ -139,12 +152,30 @@ def make_compaction_modifier(config: AgentConfig) -> Callable:
             messages,
             max_tokens=limit,
             strategy="last",          # keep most recent messages
-            token_counter=_token_counter,
+            token_counter=counter,
             include_system=True,      # never evict the system message
             allow_partial=False,      # never split a message mid-content
         )
 
-        after_tokens = _token_counter(trimmed)
+        # Min-message guard: if a single oversized message caused trim_messages
+        # to return fewer than 2 messages, preserve at least [system + last user]
+        # so the LLM always has the current request in context.
+        if len(trimmed) < 2 and len(messages) >= 2:
+            system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
+            non_system  = [m for m in messages if not isinstance(m, SystemMessage)]
+            oversized_tokens = counter([non_system[-1]]) if non_system else 0
+            log.warning(
+                "compaction_min_guard_applied",
+                reason="A single message exceeds the token limit; "
+                       "keeping system message + last user message only.",
+                oversized_message_tokens=oversized_tokens,
+                limit=limit,
+                hint="Increase context_token_limit or truncate large tool responses "
+                     "before they enter the message history.",
+            )
+            trimmed = system_msgs + ([non_system[-1]] if non_system else [])
+
+        after_tokens = counter(trimmed)
         log.info(
             "compaction_applied",
             before_messages=len(messages),
