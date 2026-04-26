@@ -10,8 +10,8 @@ for security secrets) should never call ``os.environ.get`` directly —
 instead, read from the ``AgentConfig`` or ``MCPConfig`` instance.
 """
 
-from .AgentConfig import AgentConfig
-from .MCPConfig import MCPConfig
+from .agent_config import AgentConfig
+from .mcp_config import MCPConfig
 from .helpers import _env, _env_bool, _env_float, _env_int
 
 __all__ = [
