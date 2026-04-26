@@ -148,6 +148,7 @@ from mcp.client.sse import sse_client
 from mcp.client.session import ClientSession
 from platform_sdk import get_logger
 from pydantic import Field, create_model
+from .user_context import UserContext
 
 # Use structlog logger (supports keyword args) rather than standard logging.getLogger()
 log = get_logger(__name__)
@@ -252,6 +253,8 @@ def _make_invoke_fn(
     tool_name: str,
     input_schema: dict,
     bridge_session_id: Optional[str] = None,
+    *,
+    user_ctx: "UserContext | None" = None,
 ):
     """
     Factory that returns an async callable bound to a specific tool name.
@@ -301,9 +304,14 @@ def _make_invoke_fn(
 
             # Inject per-call HMAC-signed auth context carrying user identity.
             # This is verified server-side before use — the LLM cannot forge it.
-            user_auth = _user_auth_ctx.get()
-            if user_auth:
-                kwargs["auth_context"] = user_auth
+            # Prefer explicit user_ctx (Phase 3 DI path); fall back to the
+            # module-level ContextVar (legacy path, removed in Phase 5).
+            if user_ctx is not None:
+                kwargs["auth_context"] = user_ctx.auth_token
+            else:
+                user_auth = _user_auth_ctx.get()
+                if user_auth:
+                    kwargs["auth_context"] = user_auth
 
             log.debug("mcp_tool_call", tool=tool_name, args=list(kwargs.keys()))
             try:
@@ -359,14 +367,18 @@ class MCPToolBridge:
 
     def __init__(
         self,
-        sse_url: str,
+        sse_url: str = "",
         agent_context: Any | None = None,
         session_id: Optional[str] = None,
         tool_call_timeout: float = 30.0,
+        *,
+        server_name: Optional[str] = None,
+        server_url: Optional[str] = None,
     ) -> None:
         """
         Args:
             sse_url:       Full SSE URL, e.g. http://salesforce-mcp:8081/sse
+                           May also be supplied via ``server_url`` keyword arg.
             agent_context: Optional AgentContext from a verified JWT.  When set,
                            serialized as base64-JSON in the X-Agent-Context header
                            on the SSE connection and every MCP tool call POST.
@@ -378,8 +390,11 @@ class MCPToolBridge:
                            Use this for per-session bridges.
                            For shared bridges (e.g. REST API) use set_session_id()
                            ContextVar injection instead.
+            server_name:   Optional human-readable server name (informational only).
+            server_url:    Alias for sse_url; takes precedence when both are given.
         """
-        self.sse_url = sse_url
+        self.sse_url = server_url or sse_url
+        self.server_name = server_name
         self._agent_context = agent_context
         self._session_id = session_id
         self._tool_call_timeout = tool_call_timeout
@@ -552,12 +567,23 @@ class MCPToolBridge:
         self._bg_task = None
         log.info("mcp_disconnected", url=self.sse_url)
 
-    async def get_langchain_tools(self) -> list[StructuredTool]:
+    async def get_langchain_tools(
+        self,
+        user_ctx: "UserContext | None" = None,
+    ) -> list[StructuredTool]:
         """
         Fetch all tools from the MCP server and return them as LangChain tools.
 
         Each tool's JSON Schema is used to build a typed Pydantic model,
         so LangGraph can validate arguments before dispatching.
+
+        Args:
+            user_ctx: Optional user identity object.  When provided, each tool
+                      closure will stamp ``auth_context`` with
+                      ``user_ctx.auth_token``, overriding the module-level
+                      ``_user_auth_ctx`` ContextVar.  Passing ``None`` (the
+                      default) preserves the legacy ContextVar fallback so all
+                      existing call sites continue to work unchanged.
 
         Requires an active session.  If the bridge is in a degraded (not yet
         connected) state — for example when the MCP server has not started yet
@@ -582,7 +608,11 @@ class MCPToolBridge:
             # Pass bridge reference (not session) so the closure always uses
             # the current live session even after a reconnect.
             invoke_fn = _make_invoke_fn(
-                self, tool.name, input_schema, bridge_session_id=self._session_id
+                self,
+                tool.name,
+                input_schema,
+                bridge_session_id=self._session_id,
+                user_ctx=user_ctx,
             )
 
             kwargs: dict[str, Any] = dict(
