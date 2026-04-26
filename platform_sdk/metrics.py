@@ -29,7 +29,10 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from .logging import get_logger
+
 logger = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 # Lazy initialization — metrics are only created if OTel is available
 _meter = None
@@ -67,7 +70,8 @@ def _get_or_create(name: str, kind: str, **kwargs):
             return None
         _instruments[name] = inst
         return inst
-    except Exception:
+    except Exception as exc:
+        log.warning("otel_instrument_failed", name=name, error=str(exc))
         return None
 
 

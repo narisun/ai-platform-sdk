@@ -318,7 +318,8 @@ def make_health_router(
         for name, check_fn in _checks.items():
             try:
                 results[name] = "ok" if check_fn() else "not_ready"
-            except Exception:
+            except Exception as exc:
+                log.warning("readiness_check_error", check=name, error=str(exc))
                 results[name] = "error"
 
         all_ok = all(v == "ok" for v in results.values())

@@ -184,8 +184,8 @@ class ToolResultCache:
         if self._redis is not None:
             try:
                 await self._redis.aclose()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("cache_close_error", error=str(exc))
             log.info("tool_cache_closed")
 
 

@@ -166,3 +166,15 @@ def get_langfuse_callback_handler() -> None:
         "LLM traces are captured automatically via OTel LangChain instrumentor"
     )
     return None
+
+
+def reset_telemetry_for_tests() -> None:
+    """Reset module-level telemetry singletons. Test-only — DO NOT call in production.
+
+    Pytest's session-scoped fixtures may need to re-initialise telemetry between
+    isolated test contexts. This function is idempotent and safe to call from
+    setup/teardown hooks; it has no effect in production paths.
+    """
+    global _otel_initialized, _langfuse_client
+    _otel_initialized = False
+    _langfuse_client = None

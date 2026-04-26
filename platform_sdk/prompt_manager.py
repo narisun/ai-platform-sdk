@@ -36,6 +36,31 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
+# Network-related error types for finer-grained Langfuse failure triage.
+# urllib3/httpx are both transitive deps of langfuse; guard with try/except
+# so this module works even when langfuse is not installed.
+try:
+    from urllib3.exceptions import HTTPError as _Urllib3HTTPError  # type: ignore[import]
+except ImportError:  # pragma: no cover
+    _Urllib3HTTPError = None  # type: ignore[assignment,misc]
+
+try:
+    import httpx as _httpx  # type: ignore[import]
+    _HttpxError = _httpx.HTTPError
+except ImportError:  # pragma: no cover
+    _HttpxError = None  # type: ignore[assignment,misc]
+
+
+def _is_network_error(exc: Exception) -> bool:
+    """Return True if *exc* looks like a transient network / HTTP error."""
+    if _Urllib3HTTPError is not None and isinstance(exc, _Urllib3HTTPError):
+        return True
+    if _HttpxError is not None and isinstance(exc, _HttpxError):
+        return True
+    # Fallback: inspect exception class name for common network indicators.
+    name = type(exc).__name__.lower()
+    return any(tok in name for tok in ("connection", "timeout", "network", "http"))
+
 if TYPE_CHECKING:
     from langfuse import Langfuse
 
@@ -123,9 +148,14 @@ class PromptManager:
                 result = prompt.compile() if hasattr(prompt, "compile") else str(prompt)
                 logger.debug(f"Fetched prompt '{name}' from LangFuse")
             except Exception as e:
+                error_kind = "network" if _is_network_error(e) else "other"
                 logger.warning(
-                    f"Failed to fetch prompt '{name}' from LangFuse: {e}. "
-                    f"Using fallback."
+                    "langfuse_prompt_fetch_failed",
+                    extra={
+                        "prompt": name,
+                        "error_kind": error_kind,
+                        "error": str(e),
+                    },
                 )
                 result = fallback or ""
 
@@ -179,9 +209,14 @@ class PromptManager:
                 result = prompt.compile() if hasattr(prompt, "compile") else (fallback or [])
                 logger.debug(f"Fetched chat prompt '{name}' from LangFuse")
             except Exception as e:
+                error_kind = "network" if _is_network_error(e) else "other"
                 logger.warning(
-                    f"Failed to fetch chat prompt '{name}' from LangFuse: {e}. "
-                    f"Using fallback."
+                    "langfuse_chat_prompt_fetch_failed",
+                    extra={
+                        "prompt": name,
+                        "error_kind": error_kind,
+                        "error": str(e),
+                    },
                 )
                 result = fallback or []
 
