@@ -149,6 +149,7 @@ from mcp.client.session import ClientSession
 from platform_sdk import get_logger
 from pydantic import Field, create_model
 from .user_context import UserContext
+from .errors import UnsupportedSchemaError
 
 # Use structlog logger (supports keyword args) rather than standard logging.getLogger()
 log = get_logger(__name__)
@@ -560,6 +561,23 @@ class MCPToolBridge:
         self._bg_task = None
         log.info("mcp_disconnected", url=self.sse_url)
 
+    _UNSUPPORTED_TOPLEVEL_KEYWORDS = ("$ref", "allOf", "anyOf", "oneOf")
+
+    def _convert_schema(self, tool_name: str, schema: dict) -> type:
+        """Convert an MCP tool's inputSchema to a Pydantic args model.
+
+        Raises ``UnsupportedSchemaError`` if the schema uses a top-level
+        JSON Schema keyword the SDK cannot translate ($ref, allOf, anyOf,
+        oneOf). Nested usage of those keywords inside ``properties`` falls
+        through to the existing degradation path in
+        ``_resolve_field_python_type`` (warning logged, mapped to dict).
+        """
+        if isinstance(schema, dict):
+            for kw in self._UNSUPPORTED_TOPLEVEL_KEYWORDS:
+                if kw in schema:
+                    raise UnsupportedSchemaError(tool_name=tool_name, keyword=kw)
+        return _build_args_model(tool_name, schema)
+
     async def get_langchain_tools(
         self,
         user_ctx: "UserContext | None" = None,
@@ -614,7 +632,7 @@ class MCPToolBridge:
                 description=tool.description or f"Executes the {tool.name} tool.",
             )
             if input_schema.get("properties"):
-                kwargs["args_schema"] = _build_args_model(tool.name, input_schema)
+                kwargs["args_schema"] = self._convert_schema(tool.name, input_schema)
 
             langchain_tools.append(StructuredTool.from_function(**kwargs))
             log.debug("mcp_tool_registered", tool=tool.name)
