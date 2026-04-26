@@ -94,15 +94,11 @@ try:
         MCPToolBridge,
         reset_session_id,
         set_session_id,
-        set_user_auth_token,
-        reset_user_auth_token,
     )
 except ImportError:
     MCPToolBridge = None  # type: ignore[assignment,misc]
     set_session_id = None  # type: ignore[assignment]
     reset_session_id = None  # type: ignore[assignment]
-    set_user_auth_token = None  # type: ignore[assignment]
-    reset_user_auth_token = None  # type: ignore[assignment]
 
 __all__ = [
     # Observability
@@ -183,6 +179,4 @@ __all__ = [
     "MCPToolBridge",
     "set_session_id",
     "reset_session_id",
-    "set_user_auth_token",
-    "reset_user_auth_token",
 ]

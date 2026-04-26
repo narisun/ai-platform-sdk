@@ -101,47 +101,6 @@ def reset_session_id(token: "contextvars.Token[Optional[str]]") -> None:
     _session_id_ctx.reset(token)
 
 
-# ---- Per-call user auth context ----------------------------------------------
-# Holds an HMAC-signed AgentContext token carrying the authenticated user's
-# identity (user_email, user_role) from the OAuth provider.  Set per-request
-# in the agent entry point; the bridge injects it into every tool call as
-# `auth_context`.  MCP servers verify the HMAC before extracting claims —
-# no plaintext security info ever flows as a tool parameter.
-_user_auth_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
-    "mcp_user_auth", default=None
-)
-
-
-def set_user_auth_token(token: str) -> "contextvars.Token[Optional[str]]":
-    """Bind an HMAC-signed auth context token to the current async context.
-
-    The token is an AgentContext.to_header_value() string containing the
-    authenticated user's claims.  It is injected into every MCP tool call
-    as `auth_context` so downstream services can verify and extract user
-    identity without trusting plaintext parameters.
-
-        auth_token = set_user_auth_token(agent_ctx.to_header_value())
-        try:
-            result = await graph.ainvoke(...)
-        finally:
-            reset_user_auth_token(auth_token)
-    """
-    return _user_auth_ctx.set(token)
-
-
-def reset_user_auth_token(token: "contextvars.Token[Optional[str]]") -> None:
-    """Restore the previous auth token binding after an agent invocation.
-
-    Starlette's StreamingResponse runs the async generator in a task-group
-    that receives a *copy* of the parent Context.  ContextVar.reset()
-    requires the exact same Context, so it raises ValueError when called
-    from inside the streaming task.  Fall back to clearing the var directly.
-    """
-    try:
-        _user_auth_ctx.reset(token)
-    except ValueError:
-        # Streaming context copy — safe to just clear since the request is ending.
-        _user_auth_ctx.set(None)
 
 from langchain_core.tools import StructuredTool
 from mcp.client.sse import sse_client
@@ -305,14 +264,8 @@ def _make_invoke_fn(
 
             # Inject per-call HMAC-signed auth context carrying user identity.
             # This is verified server-side before use — the LLM cannot forge it.
-            # Prefer explicit user_ctx (Phase 3 DI path); fall back to the
-            # module-level ContextVar (legacy path, removed in Phase 5).
             if user_ctx is not None:
                 kwargs["auth_context"] = user_ctx.auth_token
-            else:
-                user_auth = _user_auth_ctx.get()
-                if user_auth:
-                    kwargs["auth_context"] = user_auth
 
             log.debug("mcp_tool_call", tool=tool_name, args=list(kwargs.keys()))
             try:
@@ -590,11 +543,9 @@ class MCPToolBridge:
 
         Args:
             user_ctx: Optional user identity object.  When provided, each tool
-                      closure will stamp ``auth_context`` with
-                      ``user_ctx.auth_token``, overriding the module-level
-                      ``_user_auth_ctx`` ContextVar.  Passing ``None`` (the
-                      default) preserves the legacy ContextVar fallback so all
-                      existing call sites continue to work unchanged.
+                      closure stamps ``auth_context`` with ``user_ctx.auth_token``.
+                      When None, no auth_context header is stamped — the MCP
+                      server's OPA policy will fail-closed on missing auth.
 
         Requires an active session.  If the bridge is in a degraded (not yet
         connected) state — for example when the MCP server has not started yet
