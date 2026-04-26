@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from .Application import Application
+from .application import Application
 
 if TYPE_CHECKING:
     from ..config import AgentConfig

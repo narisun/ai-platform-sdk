@@ -4,7 +4,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Optional
 
-from .Application import Application
+from .application import Application
 
 if TYPE_CHECKING:
     from ..config import MCPConfig
