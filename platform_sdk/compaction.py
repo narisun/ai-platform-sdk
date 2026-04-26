@@ -100,6 +100,95 @@ def _get_token_counter() -> Callable[[Sequence[BaseMessage]], int]:
 
 
 # ---------------------------------------------------------------------------
+# TokenAwareCompactionModifier — class API satisfying CompactionModifier Protocol
+# ---------------------------------------------------------------------------
+
+class TokenAwareCompactionModifier:
+    """Trim message history to fit a token budget while preserving the system prompt.
+
+    Wraps the same logic as the legacy ``make_compaction_modifier()`` factory
+    but in a constructor-injected class. Satisfies the
+    ``CompactionModifier`` Protocol used by the analytics-agent port layer.
+
+    Behavior preserved from the legacy implementation:
+      - Lazy tiktoken initialisation via the module's ``_get_token_counter()``.
+      - Falls through to a character/4 heuristic when tiktoken is unavailable.
+      - Uses ``trim_messages(strategy="last", include_system=True,
+        allow_partial=False)`` for the primary trim.
+      - Min-message guard: if a single oversized message would otherwise leave
+        fewer than 2 messages, keeps system message(s) plus the last
+        non-system message so the LLM always has the current request.
+
+    Args:
+        token_limit: Maximum tokens to keep across the message list.
+        encoding: tiktoken encoding name (default: ``"cl100k_base"``). The
+            module's shared token counter currently always uses
+            ``cl100k_base``; this parameter is reserved for future use.
+    """
+
+    def __init__(
+        self,
+        token_limit: int,
+        encoding: str = "cl100k_base",
+    ) -> None:
+        self._token_limit = token_limit
+        self._encoding_name = encoding
+
+    def apply(self, messages: List[BaseMessage]) -> List[BaseMessage]:
+        """Return a possibly-trimmed message list that fits inside the budget."""
+        if not messages:
+            return messages
+
+        counter = _get_token_counter()
+        before_tokens = counter(messages)
+
+        if before_tokens <= self._token_limit:
+            return messages
+
+        # Lazy import — keeps module import cheap.
+        from langchain_core.messages import trim_messages  # type: ignore[import]
+
+        trimmed = trim_messages(
+            messages,
+            max_tokens=self._token_limit,
+            strategy="last",
+            token_counter=counter,
+            include_system=True,
+            allow_partial=False,
+        )
+
+        # Min-message guard: if a single oversized message caused trim_messages
+        # to return fewer than 2 messages, preserve at least
+        # [system + last user] so the LLM always has the current request.
+        if len(trimmed) < 2 and len(messages) >= 2:
+            system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
+            non_system  = [m for m in messages if not isinstance(m, SystemMessage)]
+            oversized_tokens = counter([non_system[-1]]) if non_system else 0
+            log.warning(
+                "compaction_min_guard_applied",
+                reason="A single message exceeds the token limit; "
+                       "keeping system message + last user message only.",
+                oversized_message_tokens=oversized_tokens,
+                limit=self._token_limit,
+                hint="Increase context_token_limit or truncate large tool responses "
+                     "before they enter the message history.",
+            )
+            trimmed = system_msgs + ([non_system[-1]] if non_system else [])
+
+        after_tokens = counter(trimmed)
+        log.info(
+            "compaction_applied",
+            before_messages=len(messages),
+            after_messages=len(trimmed),
+            before_tokens=before_tokens,
+            after_tokens=after_tokens,
+            limit=self._token_limit,
+        )
+
+        return trimmed  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
 # Compaction modifier factory
 # ---------------------------------------------------------------------------
 
