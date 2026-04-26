@@ -31,6 +31,9 @@ dependencies = [
     "langchain-core>=0.2.0",
     # Structured output (RMBrief, specialist synthesis)
     "pydantic>=2.7.0",
+    # Schema introspection — query pg_catalog at agent startup
+    "asyncpg>=0.29.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

@@ -73,6 +73,16 @@ from .prompt_manager import PromptManager
 from .protocols import Authorizer, CacheStore, LLMClient, PortfolioDataSource, ToolBridge
 from .resilience import CircuitBreaker
 from .security import OpaClient, make_api_key_verifier
+from .schema_introspection import (
+    SchemaContext,
+    TableInfo,
+    ColumnInfo,
+    ForeignKey,
+    TextJoin,
+    EntityPerspective,
+    introspect_schema,
+    format_for_prompt,
+)
 from .telemetry import setup_telemetry, get_langfuse, get_langfuse_callback_handler, flush_langfuse
 from .models import (
     ErrorDetail,
@@ -143,6 +153,15 @@ __all__ = [
     "LLMClient",
     "PortfolioDataSource",
     "ToolBridge",
+    # Schema introspection
+    "SchemaContext",
+    "TableInfo",
+    "ColumnInfo",
+    "ForeignKey",
+    "TextJoin",
+    "EntityPerspective",
+    "introspect_schema",
+    "format_for_prompt",
     # Resilience
     "CircuitBreaker",
     # Prompt loading
