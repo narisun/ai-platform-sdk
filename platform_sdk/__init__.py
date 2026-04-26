@@ -6,7 +6,7 @@ Observability:
     get_logger(name)                 — structured logger
     setup_telemetry(svc)             — OpenTelemetry tracing + auto-instrumentation
     get_langfuse()                   — LangFuse client for prompt management (or None)
-    get_langfuse_callback_handler()  — DEPRECATED: always returns None (traces via OTel)
+    get_langfuse_callback_handler()  — Per-request LangChain callback (Langfuse v2)
 
 Prompt management (via LangFuse):
     PromptManager                    — centralized prompt management with caching

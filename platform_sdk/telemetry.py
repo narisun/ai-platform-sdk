@@ -151,21 +151,42 @@ def flush_langfuse() -> None:
             logger.warning(f"Failed to flush LangFuse: {e}")
 
 
-# ── Deprecated — kept for backward compatibility during migration ──
-
-def get_langfuse_callback_handler() -> None:
+def get_langfuse_callback_handler(
+    *,
+    session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    trace_name: Optional[str] = None,
+) -> Optional[object]:
     """
-    DEPRECATED: LLM traces now flow through OpenTelemetry automatically.
+    Build a per-request Langfuse LangChain callback handler.
 
-    The LangChain/LangGraph instrumentor captures all LLM spans via OTel.
-    No callback handler injection is needed. This function always returns
-    None so existing call sites degrade gracefully.
+    Langfuse v2 has no OTLP endpoint, so LangGraph traces are sent
+    directly via this callback (passed in run_config["callbacks"]).
+    Returns None when LANGFUSE_PUBLIC_KEY/SECRET_KEY are unset, so
+    call sites can safely degrade in dev or unit tests.
     """
-    logger.debug(
-        "get_langfuse_callback_handler() is deprecated — "
-        "LLM traces are captured automatically via OTel LangChain instrumentor"
-    )
-    return None
+    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+    if not (public_key and secret_key):
+        return None
+    try:
+        from langfuse.callback import CallbackHandler
+    except ImportError:
+        logger.debug("langfuse package not installed — callback disabled")
+        return None
+    host = os.getenv("LANGFUSE_HOST", "http://langfuse:3000")
+    try:
+        return CallbackHandler(
+            public_key=public_key,
+            secret_key=secret_key,
+            host=host,
+            session_id=session_id,
+            user_id=user_id,
+            trace_name=trace_name,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to build Langfuse callback handler: {e}")
+        return None
 
 
 def reset_telemetry_for_tests() -> None:
