@@ -367,18 +367,14 @@ class MCPToolBridge:
 
     def __init__(
         self,
-        sse_url: str = "",
+        sse_url: str,
         agent_context: Any | None = None,
         session_id: Optional[str] = None,
         tool_call_timeout: float = 30.0,
-        *,
-        server_name: Optional[str] = None,
-        server_url: Optional[str] = None,
     ) -> None:
         """
         Args:
             sse_url:       Full SSE URL, e.g. http://salesforce-mcp:8081/sse
-                           May also be supplied via ``server_url`` keyword arg.
             agent_context: Optional AgentContext from a verified JWT.  When set,
                            serialized as base64-JSON in the X-Agent-Context header
                            on the SSE connection and every MCP tool call POST.
@@ -390,11 +386,8 @@ class MCPToolBridge:
                            Use this for per-session bridges.
                            For shared bridges (e.g. REST API) use set_session_id()
                            ContextVar injection instead.
-            server_name:   Optional human-readable server name (informational only).
-            server_url:    Alias for sse_url; takes precedence when both are given.
         """
-        self.sse_url = server_url or sse_url
-        self.server_name = server_name
+        self.sse_url = sse_url
         self._agent_context = agent_context
         self._session_id = session_id
         self._tool_call_timeout = tool_call_timeout
