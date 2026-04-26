@@ -85,6 +85,19 @@ class TextJoin:
 
 
 @dataclass(frozen=True)
+class GlossaryTerm:
+    """One domain-specific term with the agent's binding interpretation.
+
+    Banking has overloaded terms ("volume" can mean count or dollars; "value"
+    can mean amount or notional; "outstanding" can mean balance or AR).
+    Encoding the team's local convention here lets the LLM resolve these
+    consistently — and lets new analysts learn what the platform means.
+    """
+    term: str
+    definition: str
+
+
+@dataclass(frozen=True)
 class EntityPerspective:
     """One analytical angle into the data warehouse.
 
@@ -107,6 +120,7 @@ class SchemaContext:
     foreign_keys: list[ForeignKey]
     text_joins: list[TextJoin]
     perspectives: list[EntityPerspective] = field(default_factory=list)
+    glossary: list[GlossaryTerm] = field(default_factory=list)
 
 
 # ── Internal: heuristics ──────────────────────────────────────────────────
@@ -280,17 +294,17 @@ def _split_qualified(ident: str) -> tuple[str, str, str]:
 
 def _load_relationships_yaml(
     path: Optional[Union[Path, str]],
-) -> tuple[list[TextJoin], list[EntityPerspective]]:
-    """Load text joins and analyst perspectives from a single YAML file.
+) -> tuple[list[TextJoin], list[EntityPerspective], list[GlossaryTerm]]:
+    """Load text joins, analyst perspectives, and glossary from a single YAML.
 
-    Both sections are optional. Missing file or missing sections degrade
+    All three sections are optional. Missing file or missing sections degrade
     gracefully to empty lists so callers can ship partial data.
     """
     if path is None:
-        return [], []
+        return [], [], []
     p = Path(path)
     if not p.exists():
-        return [], []
+        return [], [], []
     raw = yaml.safe_load(p.read_text()) or {}
 
     joins: list[TextJoin] = []
@@ -320,7 +334,16 @@ def _load_relationships_yaml(
             )
         )
 
-    return joins, perspectives
+    glossary: list[GlossaryTerm] = []
+    for item in raw.get("glossary", []):
+        glossary.append(
+            GlossaryTerm(
+                term=item["term"],
+                definition=item.get("definition", "").strip(),
+            )
+        )
+
+    return joins, perspectives, glossary
 
 
 # ── Public: introspect ────────────────────────────────────────────────────
@@ -379,12 +402,13 @@ async def introspect_schema(
                 )
             )
 
-    text_joins, perspectives = _load_relationships_yaml(relationships_path)
+    text_joins, perspectives, glossary = _load_relationships_yaml(relationships_path)
     return SchemaContext(
         tables=tables,
         foreign_keys=fks,
         text_joins=text_joins,
         perspectives=perspectives,
+        glossary=glossary,
     )
 
 
@@ -404,6 +428,20 @@ def format_for_prompt(ctx: SchemaContext) -> str:
       ### Text-Match Joins (semantic)
     """
     lines: list[str] = []
+
+    if ctx.glossary:
+        lines.append("## Domain Glossary")
+        lines.append("")
+        lines.append(
+            "How this team uses common banking terms. When the user's question "
+            "uses one of these words, map to the SQL pattern indicated here. "
+            "Misreading a term silently changes the answer (e.g. returning a "
+            "dollar sum when the user asked for a count)."
+        )
+        lines.append("")
+        for g in ctx.glossary:
+            lines.append(f"- **{g.term}** — {g.definition}")
+        lines.append("")
 
     if ctx.perspectives:
         lines.append("## Analyst Perspectives")

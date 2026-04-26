@@ -80,6 +80,7 @@ from .schema_introspection import (
     ForeignKey,
     TextJoin,
     EntityPerspective,
+    GlossaryTerm,
     introspect_schema,
     format_for_prompt,
 )
@@ -160,6 +161,7 @@ __all__ = [
     "ForeignKey",
     "TextJoin",
     "EntityPerspective",
+    "GlossaryTerm",
     "introspect_schema",
     "format_for_prompt",
     # Resilience
