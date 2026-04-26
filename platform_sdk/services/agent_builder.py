@@ -11,7 +11,7 @@ from langgraph.prebuilt import create_react_agent
 from ..compaction import make_compaction_modifier
 from ..config import AgentConfig
 from ..logging import get_logger
-from .ChatLLMFactory import ChatLLMFactory
+from .chat_llm_factory import ChatLLMFactory
 
 log = get_logger(__name__)
 
