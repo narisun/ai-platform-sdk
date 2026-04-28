@@ -33,11 +33,13 @@ dependencies = [
     # Schema introspection — query pg_catalog at agent startup
     "asyncpg>=0.29.0",
     "pyyaml>=6.0",
+    # MCP — used by platform_sdk.mcp_bridge (consumed by every agent that
+    # talks to MCP tool servers; previously declared only by agents/requirements.txt)
+    "mcp[cli]>=1.9.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
 fastapi = ["fastapi>=0.111.0"]
-mcp-bridge = ["mcp>=1.0.0"]
 postgres-checkpointer = ["langgraph-checkpoint-postgres>=2.0.0"]
 
 [tool.setuptools.packages.find]
