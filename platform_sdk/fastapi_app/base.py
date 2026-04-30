@@ -43,6 +43,8 @@ class BaseAgentApp:
     """
 
     service_name: str = ""
+    service_title: str = ""        # OpenAPI title; falls back to service_name
+    service_description: str = ""  # OpenAPI description; empty by default
     mcp_servers: Mapping[str, str] = {}
     enable_telemetry: bool = True
     requires_checkpointer: bool = False
@@ -162,7 +164,7 @@ class BaseAgentApp:
             store=store,
         )
 
-        log.info(f"{self.service_name}_ready")
+        log.info(f"{self.service_name.replace('-', '_')}_ready")
         try:
             yield
         finally:
@@ -203,7 +205,8 @@ class BaseAgentApp:
     def create_app(self, deps: Optional[Any] = None) -> "FastAPI":
         configure_logging()
         app = FastAPI(
-            title=self.service_name,
+            title=self.service_title or self.service_name,
+            description=self.service_description,
             version="1.0.0",
             lifespan=self.lifespan,
         )

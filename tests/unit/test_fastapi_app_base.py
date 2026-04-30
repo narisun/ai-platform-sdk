@@ -145,3 +145,81 @@ async def test_lifespan_raises_when_store_required_but_missing():
     with pytest.raises(NotImplementedError, match="requires_conversation_store=True"):
         async with fastapi_app.router.lifespan_context(fastapi_app):
             pass
+
+
+def test_service_title_and_description_overrides_apply():
+    from platform_sdk.fastapi_app import BaseAgentApp
+
+    class Titled(BaseAgentApp):
+        service_name = "x-y-z"
+        service_title = "Pretty Name"
+        service_description = "Pretty description here."
+
+        def build_dependencies(self, *, bridges, checkpointer, store):
+            return {}
+
+        def routes(self):
+            return []
+
+    fastapi_app = Titled().create_app()
+    assert fastapi_app.title == "Pretty Name"
+    assert fastapi_app.description == "Pretty description here."
+
+
+def test_service_title_falls_back_to_service_name():
+    from platform_sdk.fastapi_app import BaseAgentApp
+
+    class NoTitle(BaseAgentApp):
+        service_name = "no-title"
+
+        def build_dependencies(self, *, bridges, checkpointer, store):
+            return {}
+
+        def routes(self):
+            return []
+
+    fastapi_app = NoTitle().create_app()
+    assert fastapi_app.title == "no-title"
+
+
+@pytest.mark.asyncio
+async def test_lifespan_ready_log_uses_underscore_form(monkeypatch):
+    """Service names with hyphens should still log <name>_ready (underscore form)."""
+    from platform_sdk.fastapi_app import BaseAgentApp
+    import platform_sdk.fastapi_app.base as base_mod
+
+    info_calls: list = []
+
+    class _RecorderLogger:
+        def info(self, event, **kw):
+            info_calls.append(event)
+
+        def warning(self, event, **kw):
+            pass
+
+        def error(self, event, **kw):
+            pass
+
+        def debug(self, event, **kw):
+            pass
+
+    monkeypatch.setattr(base_mod, "get_logger", lambda name: _RecorderLogger())
+
+    class HyphenName(BaseAgentApp):
+        service_name = "my-service-name"
+        mcp_servers: dict = {}
+        enable_telemetry = False
+        requires_checkpointer = False
+        requires_conversation_store = False
+
+        def build_dependencies(self, *, bridges, checkpointer, store):
+            return {}
+
+        def routes(self):
+            return []
+
+    fastapi_app = HyphenName().create_app()
+    async with fastapi_app.router.lifespan_context(fastapi_app):
+        pass
+    assert "my_service_name_ready" in info_calls
+    assert "my-service-name_ready" not in info_calls
