@@ -100,6 +100,12 @@ from .models import (
 from .base import Application, Agent, McpService
 from .services import AgentBuilder, ChatLLMFactory, CheckpointerFactory, ApiKeyVerifier
 
+# FastAPI agent base — optional; requires fastapi extra at install time.
+try:
+    from .fastapi_app import BaseAgentApp
+except ImportError:
+    BaseAgentApp = None  # type: ignore[assignment,misc]
+
 # MCP Bridge — optional dependency (requires `mcp` package).
 try:
     from .mcp_bridge import (
@@ -181,6 +187,7 @@ __all__ = [
     "Application",
     "Agent",
     "McpService",
+    "BaseAgentApp",
     # Service classes
     "AgentBuilder",
     "ChatLLMFactory",
