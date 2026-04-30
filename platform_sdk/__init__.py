@@ -53,6 +53,7 @@ Service classes:
 """
 from .agent import build_agent, build_specialist_agent, make_chat_llm, make_checkpointer, setup_checkpointer
 from .auth import AgentContext, assert_secrets_configured
+from .mcp_auth import AgentContextMiddleware, get_agent_context, verify_auth_context
 from .authorized_tool import authorized_tool, is_error_response, make_error
 from .bridge_health import BridgeHealthMatrix
 from .cache import ToolResultCache, cached_tool
@@ -131,6 +132,9 @@ __all__ = [
     "make_api_key_verifier",
     "AgentContext",
     "assert_secrets_configured",
+    "AgentContextMiddleware",
+    "get_agent_context",
+    "verify_auth_context",
     # Authorization
     "authorized_tool",
     "make_error",

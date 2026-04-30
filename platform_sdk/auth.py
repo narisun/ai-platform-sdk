@@ -286,6 +286,11 @@ class AgentContext:
     # ── Authorization helpers ──────────────────────────────────────────────────
 
     @property
+    def is_anonymous(self) -> bool:
+        """True if this is the minimum-privilege anonymous fallback context."""
+        return self.rm_id == "anonymous"
+
+    @property
     def role_rank(self) -> int:
         return ROLE_RANK.get(self.role, 0)
 
