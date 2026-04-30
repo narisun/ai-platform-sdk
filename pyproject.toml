@@ -42,6 +42,9 @@ dependencies = [
 fastapi = ["fastapi>=0.111.0"]
 postgres-checkpointer = ["langgraph-checkpoint-postgres>=2.0.0"]
 
+[project.entry-points.pytest11]
+platform_sdk_fixtures = "platform_sdk.testing.plugin"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["platform_sdk*"]
