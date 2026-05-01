@@ -76,3 +76,56 @@ def persona_rm() -> dict:
 @pytest.fixture(scope="session")
 def persona_readonly() -> dict:
     return _persona_to_jwt_payload(TEST_PERSONAS["readonly"])
+
+
+# ---- Registry fixtures ----
+
+class _FakeRegistry:
+    """In-memory fake of platform_sdk.registry.client.RegistryClient.
+
+    Records every call in `self.calls` and serves lookups from `self._entries`.
+    Use `fake_registry.seed(name, entry)` to pre-populate before lookup.
+    Used by service-repo tests to verify their own registration without
+    needing a real registry server.
+    """
+
+    def __init__(self) -> None:
+        from platform_sdk.registry import RegistryEntry
+        self._entries: dict[str, RegistryEntry] = {}
+        self.calls: list = []
+
+    def seed(self, name: str, entry) -> None:
+        self._entries[name] = entry
+
+    async def register_self(self, payload: dict) -> None:
+        self.calls.append(("register_self", payload))
+
+    async def deregister(self, name: str) -> None:
+        self.calls.append(("deregister", name))
+
+    async def start_heartbeat(self, name: str) -> None:
+        self.calls.append(("start_heartbeat", name))
+
+    async def stop_heartbeat(self) -> None:
+        self.calls.append(("stop_heartbeat",))
+
+    async def start_refresh(self) -> None:
+        self.calls.append(("start_refresh",))
+
+    async def stop_refresh(self) -> None:
+        self.calls.append(("stop_refresh",))
+
+    async def lookup(self, name: str):
+        from platform_sdk.registry import ServiceNotFound
+        if name not in self._entries:
+            raise ServiceNotFound(name)
+        return self._entries[name]
+
+    async def aclose(self) -> None:
+        self.calls.append(("aclose",))
+
+
+@pytest.fixture
+def fake_registry() -> _FakeRegistry:
+    """In-memory fake of RegistryClient for unit/component tests."""
+    return _FakeRegistry()

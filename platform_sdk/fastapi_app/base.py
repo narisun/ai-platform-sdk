@@ -16,10 +16,11 @@ except ImportError as exc:
     ) from exc
 
 from ..auth import AgentContext
+from ..base.application import Application
 from ..logging import configure_logging, get_logger
 
 
-class BaseAgentApp:
+class BaseAgentApp(Application):
     """Base class for Enterprise AI FastAPI agents.
 
     Subclass declares class attributes:
@@ -46,9 +47,16 @@ class BaseAgentApp:
     service_title: str = ""        # OpenAPI title; falls back to service_name
     service_description: str = ""  # OpenAPI description; empty by default
     mcp_servers: Mapping[str, str] = {}
+    mcp_dependencies: list[str] = []   # NEW: registry-driven peer discovery.
+                                       # When non-empty, replaces mcp_servers entirely.
     enable_telemetry: bool = True
     requires_checkpointer: bool = False
     requires_conversation_store: bool = False
+
+    def __init__(self) -> None:
+        if not self.service_name:
+            raise ValueError(f"{type(self).__name__} must set service_name (got empty string)")
+        super().__init__(self.service_name)
 
     # ---- Required hooks ----
     def build_dependencies(self, *, bridges: Mapping[str, Any], checkpointer: Any, store: Any) -> Any:
@@ -89,7 +97,7 @@ class BaseAgentApp:
     def build_conversation_store(self) -> Any:
         return None
 
-    def load_config(self) -> Any:
+    def load_config(self, name: str | None = None) -> Any:
         from ..config import AgentConfig
         return AgentConfig.from_env()
 
@@ -98,16 +106,42 @@ class BaseAgentApp:
         env_var = name.upper().replace("-", "_") + "_URL"
         return os.getenv(env_var, default)
 
-    async def _connect_bridges(self, agent_ctx: AgentContext, timeout: float) -> dict[str, Any]:
-        if not self.mcp_servers:
-            return {}
+    async def _connect_bridges(self, agent_ctx, timeout: float) -> dict:
         from ..mcp_bridge import MCPToolBridge
 
         log = get_logger(self.service_name)
+        bridges: dict = {}
+
+        # Path 1: registry-driven (preferred).
+        if self.mcp_dependencies:
+            for name in self.mcp_dependencies:
+                try:
+                    entry = await self.registry.lookup(name)  # type: ignore[union-attr]
+                except Exception as exc:
+                    log.warning("registry_lookup_failed", name=name, error=str(exc))
+                    continue
+                if not entry.healthy:
+                    log.warning("mcp_unhealthy_skipping", name=name, state=entry.state)
+                    continue
+                bridge_url = str(entry.url).rstrip("/") + "/sse"
+                bridges[name] = MCPToolBridge(bridge_url, agent_context=agent_ctx)
+            await self._connect_all(bridges, timeout, log)
+            return bridges
+
+        # Path 2: deprecated mcp_servers dict.
+        self._warn_if_using_legacy_mcp_servers()
+        if not self.mcp_servers:
+            return {}
         bridges = {
             name: MCPToolBridge(self._resolve_mcp_url(name, default), agent_context=agent_ctx)
             for name, default in self.mcp_servers.items()
         }
+        await self._connect_all(bridges, timeout, log)
+        return bridges
+
+    async def _connect_all(self, bridges: dict, timeout: float, log) -> None:
+        if not bridges:
+            return
         log.info("mcp_connecting_all", servers=list(bridges.keys()), timeout=timeout)
         await asyncio.gather(
             *[b.connect(startup_timeout=timeout) for b in bridges.values()],
@@ -115,7 +149,18 @@ class BaseAgentApp:
         )
         for name, bridge in bridges.items():
             log.info("mcp_startup_status", server=name, connected=bridge.is_connected)
-        return bridges
+
+    def _warn_if_using_legacy_mcp_servers(self) -> None:
+        import warnings
+        if self.mcp_dependencies:
+            return  # new path is in use; nothing to warn about
+        if self.mcp_servers:
+            warnings.warn(
+                f"{type(self).__name__}.mcp_servers is deprecated; use "
+                "mcp_dependencies (list[str]) instead. mcp_servers will be removed in 0.6.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
     async def _make_checkpointer(self, config: Any) -> Any:
         if not self.requires_checkpointer:
@@ -140,6 +185,8 @@ class BaseAgentApp:
         if self.enable_telemetry:
             from ..telemetry import setup_telemetry
             setup_telemetry(self.service_name)
+
+        await self._register()    # NEW: register self before any business init
 
         config = self.load_config()
         agent_ctx = self.service_agent_context()
@@ -169,6 +216,7 @@ class BaseAgentApp:
             yield
         finally:
             await self.on_shutdown(deps)
+            await self._deregister()    # NEW: deregister before tearing down telemetry
             if self.enable_telemetry:
                 from ..telemetry import flush_langfuse
                 flush_langfuse()

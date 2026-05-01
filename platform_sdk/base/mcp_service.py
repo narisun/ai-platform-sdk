@@ -125,6 +125,9 @@ class McpService(Application):
 
             assert_secrets_configured()
 
+        # Self-register with the platform registry (no-op if REGISTRY_URL unset)
+        await self._register()
+
         # Create authorizer if not injected
         if self._authorizer is None:
             from ..security import OpaClient
@@ -166,6 +169,9 @@ class McpService(Application):
         finally:
             # Call shutdown hook
             await self.on_shutdown()
+
+            # Deregister from the platform registry (no-op if not registered)
+            await self._deregister()
 
             # Teardown only owned resources
             if self._owns_authorizer and self._authorizer is not None:
