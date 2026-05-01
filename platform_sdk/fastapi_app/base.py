@@ -16,10 +16,11 @@ except ImportError as exc:
     ) from exc
 
 from ..auth import AgentContext
+from ..base.application import Application
 from ..logging import configure_logging, get_logger
 
 
-class BaseAgentApp:
+class BaseAgentApp(Application):
     """Base class for Enterprise AI FastAPI agents.
 
     Subclass declares class attributes:
@@ -49,6 +50,11 @@ class BaseAgentApp:
     enable_telemetry: bool = True
     requires_checkpointer: bool = False
     requires_conversation_store: bool = False
+
+    def __init__(self) -> None:
+        if not self.service_name:
+            raise ValueError(f"{type(self).__name__} must set service_name (got empty string)")
+        super().__init__(self.service_name)
 
     # ---- Required hooks ----
     def build_dependencies(self, *, bridges: Mapping[str, Any], checkpointer: Any, store: Any) -> Any:
@@ -89,7 +95,7 @@ class BaseAgentApp:
     def build_conversation_store(self) -> Any:
         return None
 
-    def load_config(self) -> Any:
+    def load_config(self, name: str | None = None) -> Any:
         from ..config import AgentConfig
         return AgentConfig.from_env()
 
@@ -141,6 +147,8 @@ class BaseAgentApp:
             from ..telemetry import setup_telemetry
             setup_telemetry(self.service_name)
 
+        await self._register()    # NEW: register self before any business init
+
         config = self.load_config()
         agent_ctx = self.service_agent_context()
         timeout = getattr(config, "mcp_startup_timeout", 30.0) if config else 30.0
@@ -169,6 +177,7 @@ class BaseAgentApp:
             yield
         finally:
             await self.on_shutdown(deps)
+            await self._deregister()    # NEW: deregister before tearing down telemetry
             if self.enable_telemetry:
                 from ..telemetry import flush_langfuse
                 flush_langfuse()
