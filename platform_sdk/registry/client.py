@@ -49,6 +49,7 @@ class RegistryClient:
         refresh_seconds: float = 30.0,
         stale_cache_max_seconds: float = 300.0,
         transport: Optional[httpx.BaseTransport] = None,
+        httpx_client: Optional[httpx.AsyncClient] = None,
     ) -> None:
         self._url = registry_url.rstrip("/")
         self._api_key = api_key
@@ -56,16 +57,44 @@ class RegistryClient:
         self._refresh_seconds = refresh_seconds
         self._stale_cache_max_seconds = stale_cache_max_seconds
         self._cache: dict[str, _CacheEntry] = {}
-        self._client = httpx.AsyncClient(
-            base_url=self._url,
-            timeout=httpx.Timeout(connect=1.0, read=5.0, write=5.0, pool=5.0),
-            headers={"Authorization": f"Bearer {api_key}"},
-            transport=transport,
-        )
+        if httpx_client is not None:
+            self._client = httpx_client
+            # Ensure requests are rooted at registry_url when a pre-built
+            # client is supplied (base_url may not be set on it yet).
+            self._client.base_url = httpx.URL(self._url + "/")
+        else:
+            self._client = httpx.AsyncClient(
+                base_url=self._url,
+                timeout=httpx.Timeout(connect=1.0, read=5.0, write=5.0, pool=5.0),
+                headers={"Authorization": f"Bearer {api_key}"},
+                transport=transport,
+            )
         self._cb = CircuitBreaker(
             name="registry",
             failure_threshold=5,
             recovery_timeout=30.0,
+        )
+
+    @classmethod
+    def from_config(cls, config, registry_url: str | None = None) -> "RegistryClient":
+        """Build a RegistryClient from a config object that has
+        ``environment``, ``internal_api_key``, and (optionally) ``registry_url``.
+
+        The returned client uses make_internal_http_client so every
+        outbound call carries X-Environment and Bearer auth.
+        """
+        from ..http import make_internal_http_client
+
+        url = registry_url or getattr(config, "registry_url", "")
+        if not url:
+            raise ValueError(
+                "RegistryClient.from_config requires a registry_url either on "
+                "the config object or as a positional argument."
+            )
+        return cls(
+            registry_url=url,
+            api_key=getattr(config, "internal_api_key", "") or "",
+            httpx_client=make_internal_http_client(config),
         )
 
     async def aclose(self) -> None:

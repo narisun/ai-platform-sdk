@@ -1,100 +1,105 @@
 """Enterprise AI Platform — Application base class."""
 from __future__ import annotations
 
-import os
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 if TYPE_CHECKING:
     import structlog
+    from pydantic import BaseModel
 
 from ..logging import get_logger
 
 # RegistryClient is imported at module top so test code can do
 # monkeypatch.setattr("platform_sdk.base.application.RegistryClient", ...).
-# Constraint: platform_sdk.registry.client must NOT import from platform_sdk.base.*
-# If a future refactor introduces such an edge, the test pattern needs revisiting.
 from ..registry.client import RegistryClient
 
 
 class Application(ABC):
-    """Root base class for all Enterprise AI applications (agents, MCP services, registry)."""
+    """Root base class for all Enterprise AI applications.
 
-    # ---- Class-level metadata about this Application ----
-    service_type: ClassVar[str] = "other"           # "agent" | "mcp" | "registry" | "other"
-    service_metadata: ClassVar[dict[str, Any]] = {}
-    """Service-level metadata sent to the registry on registration.
+    Subclasses MUST set `config_model` to a Pydantic BaseModel subclass
+    that defines the service's configuration shape.  The model is
+    expected to expose:
+      - environment: Environment Literal
+      - registry_url: str
+      - service_url: str
+      - service_version: str
+      - internal_api_key: str
 
-    Override by ASSIGNMENT in subclasses (``service_metadata = {"owner": "team"}``),
-    not by mutation. Mutating the inherited dict would leak across siblings via the
-    shared class-level default.
+    On construction, if no `config=` is passed, the SDK calls
+    `cls.config_model.load()` and stores the result on `self.config`.
     """
 
-    def __init__(self, name: str) -> None:
+    # ---- Class-level metadata ----
+    service_type: ClassVar[str] = "other"
+    service_metadata: ClassVar[dict[str, Any]] = {}
+
+    # MUST be overridden by subclasses.
+    config_model: ClassVar[Optional[type["BaseModel"]]] = None
+
+    def __init__(self, name: str, *, config: Optional["BaseModel"] = None) -> None:
         self.name = name
-        self.config = self.load_config(name)
+        if config is not None:
+            self.config = config
+        else:
+            if self.config_model is None:
+                raise NotImplementedError(
+                    f"{type(self).__name__} must set the `config_model` "
+                    f"class attribute or pass an explicit `config=` to __init__."
+                )
+            self.config = self.config_model.load()
+        # Convenience handle — every config has `environment`.
+        self.environment: str = self.config.environment
         self.registry: Optional[RegistryClient] = None
 
     @property
     def logger(self) -> "structlog.BoundLogger":
         return get_logger(self.name)
 
-    @abstractmethod
-    def load_config(self, name: str) -> Any: ...
-
     async def startup(self) -> None: ...
     async def shutdown(self) -> None: ...
 
     # ------------------------------------------------------------------
-    # Self-registration with the platform registry
+    # Self-registration
     # ------------------------------------------------------------------
 
-    def _self_url(self) -> str:
-        """The URL this service is reachable at. Read from SERVICE_URL env, defaults to ''."""
-        return os.environ.get("SERVICE_URL", "")
-
-    def _version(self) -> str:
-        """Service version. Subclasses MAY override; default reads SERVICE_VERSION env."""
-        return os.environ.get("SERVICE_VERSION", "")
-
     async def _register(self) -> None:
-        """If REGISTRY_URL is set and this isn't the registry itself, register self
-        and start heartbeat + refresh background tasks. Called by lifespan after
-        telemetry but before any business init.
+        """If `config.registry_url` is set and this isn't the registry itself,
+        register self and start heartbeat + refresh background tasks.
         """
-        registry_url = os.environ.get("REGISTRY_URL")
+        registry_url = (self.config.registry_url or "").rstrip("/")
         if not registry_url:
             self.logger.info("registry_url_not_set", behavior="self_registration_disabled")
             return
 
-        self_url = self._self_url()
+        self_url = (self.config.service_url or "").rstrip("/")
         if not self_url:
             raise RuntimeError(
                 "SERVICE_URL must be set when REGISTRY_URL is set. "
                 "This service cannot register without knowing its own reachable URL — "
-                "a missing SERVICE_URL would silently register the wrong URL with the "
-                "registry. Set SERVICE_URL=http://<host>:<port> in your service's environment."
+                "set service_url in the service's config (or via the SERVICE_URL env "
+                "var that config/dev.yaml resolves)."
             )
 
-        if registry_url.rstrip("/") == self_url.rstrip("/"):
-            self.logger.info("registry_self_skip", reason="REGISTRY_URL == SERVICE_URL")
+        if registry_url == self_url:
+            self.logger.info("registry_self_skip", reason="registry_url == service_url")
             return
 
-        api_key = os.environ.get("INTERNAL_API_KEY", "")
-        self.registry = RegistryClient(registry_url=registry_url, api_key=api_key)
+        self.registry = RegistryClient.from_config(self.config, registry_url=registry_url)
 
         await self.registry.register_self({
             "name": self.name,
-            "url": self_url,
+            "url": self.config.service_url,
             "type": self.service_type,
-            "version": self._version() or None,
+            "version": self.config.service_version or None,
             "metadata": dict(self.service_metadata),
         })
         await self.registry.start_heartbeat(self.name)
         await self.registry.start_refresh()
 
     async def _deregister(self) -> None:
-        """Stop background tasks and DELETE /api/services/{name}. Safe if registry is None."""
+        """Stop background tasks and DELETE /api/services/{name}."""
         if self.registry is None:
             return
         try:

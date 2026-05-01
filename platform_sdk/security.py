@@ -167,35 +167,36 @@ class OpaClient:
         return cls(MCPConfig.from_env())
 
 
-def make_api_key_verifier(api_key: Optional[str] = None):
+def make_api_key_verifier(
+    api_key: Optional[str] = None,
+    *,
+    environment: Optional[str] = None,
+):
+    """Return a FastAPI dependency that validates Bearer tokens and (optionally) X-Environment.
+
+    If `environment` is provided (a string from the Environment Literal),
+    the dependency also requires an `X-Environment` header equal to that
+    value. Mismatch returns 403; absence returns 403. This is the
+    inbound half of L3 environment isolation.
+
+    If `api_key` is None the value is read from INTERNAL_API_KEY at call
+    time, so the returned dependency can be created at module level
+    safely even if the environment variable isn't set during import.
     """
-    Return a FastAPI dependency that validates Bearer tokens.
-
-    If api_key is None the value is read from INTERNAL_API_KEY at call time,
-    so the returned dependency can be created at module level safely even if
-    the environment variable isn't set during import.
-
-    Usage:
-        verify = make_api_key_verifier()
-
-        @app.post("/endpoint")
-        async def endpoint(_: str = Depends(verify)):
-            ...
-    """
-    # Lazy FastAPI import — services without FastAPI (e.g. MCP servers) can
-    # still import the rest of this module without pulling in FastAPI.
-    from fastapi import HTTPException, Security
+    from fastapi import HTTPException, Request, Security
     from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-    _bearer = HTTPBearer(auto_error=True)
+    from .config.env_isolation import ENV_HEADER
 
-    # Capture the key at verifier-creation time if provided; otherwise read
-    # from environment on every request (safer for late-binding test setups).
+    _bearer = HTTPBearer(auto_error=True)
     _static_key: Optional[str] = api_key
+    _env: Optional[str] = environment
 
     async def _verify(
+        request: Request,
         credentials: HTTPAuthorizationCredentials = Security(_bearer),
     ) -> str:
+        # ---- Bearer token ----
         key = _static_key or os.environ.get("INTERNAL_API_KEY", "")
         if not key:
             log.error("auth_misconfigured", reason="INTERNAL_API_KEY not set")
@@ -206,6 +207,26 @@ def make_api_key_verifier(api_key: Optional[str] = None):
         if not hmac.compare_digest(credentials.credentials, key):
             log.warning("auth_rejected", reason="invalid_api_key")
             raise HTTPException(status_code=401, detail="Unauthorized")
+
+        # ---- X-Environment (only when configured) ----
+        if _env is not None:
+            got = request.headers.get(ENV_HEADER)
+            if got != _env:
+                log.warning(
+                    "environment_mismatch_rejected",
+                    expected_env=_env,
+                    got_env=got,
+                    peer_ip=request.client.host if request.client else "",
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "environment_mismatch",
+                        "expected": _env,
+                        "got": got or "",
+                    },
+                )
+
         return credentials.credentials
 
     return _verify

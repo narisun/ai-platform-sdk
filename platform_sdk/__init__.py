@@ -58,7 +58,15 @@ from .authorized_tool import authorized_tool, is_error_response, make_error
 from .bridge_health import BridgeHealthMatrix
 from .cache import ToolResultCache, cached_tool
 from .compaction import make_compaction_modifier
-from .config import AgentConfig, MCPConfig
+from .config import (
+    AgentConfig,
+    MCPConfig,
+    ConfigError,
+    ConfigErrorDetail,
+    Environment,
+    ENV_HEADER,
+    load_config,
+)
 from .llm_client import EnterpriseLLMClient
 from .logging import configure_logging, get_logger
 from .mcp_server_base import BaseMCPServer, BaseResources, create_base_resources, make_health_router
@@ -133,6 +141,11 @@ __all__ = [
     # Configuration
     "AgentConfig",
     "MCPConfig",
+    "ConfigError",
+    "ConfigErrorDetail",
+    "Environment",
+    "ENV_HEADER",
+    "load_config",
     # Security
     "OpaClient",
     "make_api_key_verifier",

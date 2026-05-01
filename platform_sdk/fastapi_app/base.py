@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, ClassVar, Iterable, Mapping, Optional
 
 try:
     from fastapi import FastAPI
@@ -17,6 +17,7 @@ except ImportError as exc:
 
 from ..auth import AgentContext
 from ..base.application import Application
+from ..config import AgentConfig
 from ..logging import configure_logging, get_logger
 
 
@@ -53,10 +54,13 @@ class BaseAgentApp(Application):
     requires_checkpointer: bool = False
     requires_conversation_store: bool = False
 
-    def __init__(self) -> None:
+    # Auto-load AgentConfig when no explicit config= is passed to __init__.
+    config_model: ClassVar[type] = AgentConfig
+
+    def __init__(self, *, config: Optional[AgentConfig] = None) -> None:
         if not self.service_name:
             raise ValueError(f"{type(self).__name__} must set service_name (got empty string)")
-        super().__init__(self.service_name)
+        super().__init__(self.service_name, config=config)
 
     # ---- Required hooks ----
     def build_dependencies(self, *, bridges: Mapping[str, Any], checkpointer: Any, store: Any) -> Any:
@@ -96,10 +100,6 @@ class BaseAgentApp(Application):
 
     def build_conversation_store(self) -> Any:
         return None
-
-    def load_config(self, name: str | None = None) -> Any:
-        from ..config import AgentConfig
-        return AgentConfig.from_env()
 
     # ---- Internals ----
     def _resolve_mcp_url(self, name: str, default: str) -> str:
@@ -188,7 +188,7 @@ class BaseAgentApp(Application):
 
         await self._register()    # NEW: register self before any business init
 
-        config = self.load_config()
+        config = self.config
         agent_ctx = self.service_agent_context()
         timeout = getattr(config, "mcp_startup_timeout", 30.0) if config else 30.0
 
