@@ -72,6 +72,10 @@ class MCPConfig(BaseModel):
     service_url: str = ""
     service_version: str = ""
 
+    # Internal Bearer token used for MCP↔registry and MCP↔MCP authentication.
+    # Read by make_internal_http_client() and RegistryClient.from_config().
+    internal_api_key: str = ""
+
     _VALID_AGENT_ROLES: ClassVar[set[str]] = {
         "commercial_banking_agent",
         "data_analyst_agent",
