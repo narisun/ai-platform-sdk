@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.1 — 2026-05-01
+
+### FIX
+
+- `MCPConfig` now defines `internal_api_key: str = ""`.
+
+  Previously this field only existed on `AgentConfig`, which meant MCP
+  services could not authenticate when registering with `ai-registry`:
+  `RegistryClient.from_config(config)` reads `config.internal_api_key`,
+  and the missing field resolved to an empty string, producing a 401 at
+  the registry's auth dependency. Surfaced consistently across all four
+  Phase-2 MCP migrations (data, news-search, payments, salesforce) — each
+  had to drop `internal_api_key: ${INTERNAL_API_KEY}` from their
+  `config/default.yaml` because of `extra="forbid"`.
+
+  After 0.6.1, MCP repos can restore the YAML reference and authenticate
+  registration normally.
+
 ## 0.6.0 — 2026-05-01
 
 ### BREAKING

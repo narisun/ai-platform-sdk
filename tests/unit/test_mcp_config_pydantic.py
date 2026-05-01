@@ -98,3 +98,17 @@ def test_mcp_config_agent_role_must_be_in_valid_set():
     with pytest.raises(ValidationError) as exc:
         MCPConfig(environment="dev", agent_role="not_a_real_role")
     assert "agent_role" in str(exc.value)
+
+
+def test_mcp_config_internal_api_key_field():
+    """internal_api_key is required for MCP↔registry authentication via
+    make_internal_http_client() and RegistryClient.from_config()."""
+    from platform_sdk.config import MCPConfig
+
+    cfg = MCPConfig(environment="dev", internal_api_key="abc123")
+    assert cfg.internal_api_key == "abc123"
+
+    # Default is empty string (the field is optional at the model level;
+    # services that need registration provide it via ${INTERNAL_API_KEY} in YAML).
+    cfg_default = MCPConfig(environment="dev")
+    assert cfg_default.internal_api_key == ""

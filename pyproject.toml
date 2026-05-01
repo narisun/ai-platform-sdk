@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "enterprise-ai-platform-sdk"
-version = "0.6.0"
+version = "0.6.1"
 description = "Enterprise AI Platform — shared SDK for agents, MCP servers, security, caching, and compaction"
 requires-python = ">=3.11"
 dependencies = [
