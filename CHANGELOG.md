@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.6.0 — 2026-05-01
+
+### BREAKING
+
+- `MCPConfig.from_env()` and `AgentConfig.from_env()` removed.
+  Use `MCPConfig.load()` / `AgentConfig.load()` instead. The new
+  loader reads `config/default.yaml` + optional `config/<env>.yaml`,
+  resolves `${VAR}` from env, and validates against the Pydantic model.
+- `MCPConfig` and `AgentConfig` are now Pydantic v2 BaseModel
+  subclasses (previously dataclasses). Field defaults preserved.
+  `extra="forbid"` rejects unknown YAML keys.
+- `Application.load_config()` abstract method removed. Subclasses
+  declare `config_model: ClassVar[type[BaseModel]]` instead.
+- `ENVIRONMENT` is now a strict `Literal["dev", "staging", "prod"]`.
+  Values like `"local"`, `"production"`, `"test"` are rejected.
+
+### NEW
+
+- `platform_sdk.config.loader.load_config()` — three-phase loader
+  (parse → substitute → validate) with collect-all errors.
+- `platform_sdk.config.env_isolation.Environment` Literal and
+  `ENV_HEADER = "X-Environment"` constant.
+- `platform_sdk.http.make_internal_http_client(config)` factory —
+  stamps `X-Environment` and Bearer auth on every outbound request.
+- `make_api_key_verifier(environment=...)` — inbound `X-Environment`
+  validation. Mismatch → 403.
+- `RegistryClient.from_config(config, registry_url=...)` constructor
+  — uses the HTTP factory automatically.
+- `platform-sdk check-env-example` CLI subcommand — scans
+  `config/*.yaml` for `${VAR}` references and verifies `.env.example`
+  covers them.
+
+### REMOVED
+
+- `platform_sdk.config.helpers` module and the `_env`, `_env_int`,
+  `_env_float`, `_env_bool` helpers. The loader is the only env-reader.
+
 ## 0.5.1 — 2026-05-01
 
 ### Fixed
