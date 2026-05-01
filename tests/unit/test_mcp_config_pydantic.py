@@ -72,3 +72,29 @@ def test_mcp_config_no_from_env():
     from platform_sdk.config import MCPConfig
 
     assert not hasattr(MCPConfig, "from_env")
+
+
+def test_mcp_config_opa_url_must_be_non_empty():
+    from platform_sdk.config import MCPConfig
+    with pytest.raises(ValidationError) as exc:
+        MCPConfig(environment="dev", opa_url="")
+    assert "opa_url" in str(exc.value)
+
+
+def test_mcp_config_opa_url_must_be_http_or_https():
+    from platform_sdk.config import MCPConfig
+    with pytest.raises(ValidationError) as exc:
+        MCPConfig(environment="dev", opa_url="ftp://opa/policy")
+    assert "opa_url" in str(exc.value)
+
+
+def test_mcp_config_agent_role_must_be_in_valid_set():
+    from platform_sdk.config import MCPConfig
+    # Valid roles pass.
+    for role in ("commercial_banking_agent", "data_analyst_agent",
+                 "compliance_agent", "analytics_agent"):
+        MCPConfig(environment="dev", agent_role=role)
+    # Invalid role rejected.
+    with pytest.raises(ValidationError) as exc:
+        MCPConfig(environment="dev", agent_role="not_a_real_role")
+    assert "agent_role" in str(exc.value)
