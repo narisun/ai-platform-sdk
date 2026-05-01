@@ -12,12 +12,37 @@ pytestmark = pytest.mark.unit
 class _StubApp:
     """Minimal subclass we can drive directly in tests, bypassing BaseAgentApp lifespan."""
     def __init__(self, name: str = "test", service_type: str = "agent"):
+        from typing import ClassVar
+
+        from pydantic import BaseModel, ConfigDict
+
         from platform_sdk.base.application import Application
+        from platform_sdk.config.env_isolation import Environment
+
+        class _StubConfig(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+            environment: Environment = "dev"
+            registry_url: str = ""
+            service_url: str = ""
+            service_version: str = ""
+            internal_api_key: str = ""
+
+            @classmethod
+            def load(cls, *, config_dir=None, env=None):
+                import os
+                return cls(
+                    environment=os.environ.get("ENVIRONMENT", "dev"),
+                    registry_url=os.environ.get("REGISTRY_URL", ""),
+                    service_url=os.environ.get("SERVICE_URL", ""),
+                    service_version=os.environ.get("SERVICE_VERSION", ""),
+                    internal_api_key=os.environ.get("INTERNAL_API_KEY", ""),
+                )
+
         _service_type = service_type
-        # Patch in a concrete __init_subclass__ replacement
         class _Concrete(Application):
             service_type = _service_type  # type: ignore[assignment]
-            def load_config(self, name): return None
+            config_model = _StubConfig
+
         self.app = _Concrete(name)
 
     @property
@@ -54,9 +79,13 @@ async def test_register_creates_client_and_calls_register_self(monkeypatch):
     fake.register_self = AsyncMock()
     fake.start_heartbeat = AsyncMock()
     fake.start_refresh = AsyncMock()
+
+    def _from_config(config, registry_url=None):
+        return fake
+
     monkeypatch.setattr(
-        "platform_sdk.base.application.RegistryClient",
-        lambda **kw: fake,
+        "platform_sdk.base.application.RegistryClient.from_config",
+        staticmethod(_from_config),
     )
     s = _StubApp(name="ai-mcp-data", service_type="mcp")
     await s.app._register()
@@ -82,7 +111,14 @@ async def test_deregister_calls_deregister_then_aclose(monkeypatch):
     fake.stop_heartbeat = AsyncMock()
     fake.stop_refresh = AsyncMock()
     fake.aclose = AsyncMock()
-    monkeypatch.setattr("platform_sdk.base.application.RegistryClient", lambda **kw: fake)
+
+    def _from_config(config, registry_url=None):
+        return fake
+
+    monkeypatch.setattr(
+        "platform_sdk.base.application.RegistryClient.from_config",
+        staticmethod(_from_config),
+    )
     s = _StubApp(name="ai-mcp-data")
     await s.app._register()
     await s.app._deregister()
