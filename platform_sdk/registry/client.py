@@ -12,6 +12,7 @@ on startup automatically. Service code never instantiates this directly.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -107,3 +108,101 @@ class RegistryClient:
             raise RegistryUnreachable(f"registry {r.status_code}")
         r.raise_for_status()
         return RegistryEntry.model_validate(r.json())
+
+    # ------------------------------------------------------------------
+    # Registration / deregistration
+    # ------------------------------------------------------------------
+
+    async def register_self(self, payload: dict) -> None:
+        """POST /api/services with a RegistrationRequest. 409 is idempotent."""
+        try:
+            r = await self._client.post("/api/services", json=payload)
+        except httpx.RequestError as exc:
+            raise RegistryUnreachable(str(exc)) from exc
+        if r.status_code == 409:
+            log.info("registration_idempotent", name=payload["name"])
+            return
+        r.raise_for_status()
+        log.info("registration", name=payload["name"], url=payload["url"], type=payload["type"])
+        self._registered_name = payload["name"]
+
+    async def deregister(self, name: str) -> None:
+        """DELETE /api/services/{name}. Logs but does not raise on failure."""
+        try:
+            await self._client.delete(f"/api/services/{name}")
+            log.info("deregistration", name=name)
+        except httpx.HTTPError as exc:
+            log.warning("deregistration_failed", name=name, error=str(exc))
+
+    # ------------------------------------------------------------------
+    # Heartbeat task
+    # ------------------------------------------------------------------
+
+    async def start_heartbeat(self, name: str) -> None:
+        if getattr(self, "_heartbeat_task", None) is not None:
+            return
+        self._heartbeat_name = name
+
+        async def _loop() -> None:
+            while True:
+                try:
+                    r = await self._client.post(f"/api/services/{name}/heartbeat")
+                    if r.status_code != 200:
+                        log.warning("heartbeat_non_200", name=name, status=r.status_code)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning("heartbeat_failed", name=name, error=str(exc))
+                await asyncio.sleep(self._heartbeat_seconds)
+
+        self._heartbeat_task = asyncio.create_task(_loop())
+
+    async def stop_heartbeat(self) -> None:
+        task = getattr(self, "_heartbeat_task", None)
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        self._heartbeat_task = None
+
+    # ------------------------------------------------------------------
+    # Refresh task — repopulate full cache periodically
+    # ------------------------------------------------------------------
+
+    async def start_refresh(self) -> None:
+        if getattr(self, "_refresh_task", None) is not None:
+            return
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(self._refresh_seconds)
+                try:
+                    r = await self._client.get("/api/services")
+                    if r.status_code == 200:
+                        body = r.json()
+                        services = body.get("services", body) if isinstance(body, dict) else body
+                        for raw in services:
+                            entry = RegistryEntry.model_validate(raw)
+                            self._cache[entry.name] = _CacheEntry(
+                                entry=entry, fetched_at=time.monotonic()
+                            )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning("refresh_failed", error=str(exc))
+
+        self._refresh_task = asyncio.create_task(_loop())
+
+    async def stop_refresh(self) -> None:
+        task = getattr(self, "_refresh_task", None)
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        self._refresh_task = None
