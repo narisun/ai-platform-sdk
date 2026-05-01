@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.5.0 — 2026-05-01
+
+### Added
+- `platform_sdk.registry` package — `RegistryClient` (lookup with cache,
+  soft-fail, circuit breaker; register_self / deregister; heartbeat and
+  refresh background tasks), `RegistryEntry` / `RegistrationRequest` Pydantic
+  models, `RegistryUnreachable` / `ServiceNotFound` exceptions.
+- `Application._register()` / `_deregister()` lifecycle hooks. Every
+  Application subclass (Agent, McpService, BaseAgentApp) self-registers with
+  the platform registry on startup when `REGISTRY_URL` is set, and
+  gracefully deregisters on shutdown.
+- `BaseAgentApp.mcp_dependencies: list[str]` — registry-driven peer
+  discovery. Replaces the hardcoded `mcp_servers` dict.
+- `service_type` and `service_metadata` ClassVars on `Application`.
+- `fake_registry` pytest fixture (auto-registered via plugin).
+- Optional extra `[registry-server]` (aiosqlite + pyyaml) for the
+  ai-registry server repo.
+
+### Changed
+- `BaseAgentApp` now extends `Application` directly. `BaseAgentApp.load_config`
+  signature accepts an optional `name` parameter for compatibility with
+  `Application.load_config(name)`.
+- `BaseAgentApp.mcp_servers` is deprecated. Setting it without
+  `mcp_dependencies` emits a `DeprecationWarning`. Removal scheduled for 0.6.0.
+- `_register()` raises `RuntimeError` when `REGISTRY_URL` is set but
+  `SERVICE_URL` is empty (a common deployment misconfiguration that
+  silently registers the wrong URL otherwise).
+
+### Migration notes
+- Existing services on 0.4.0 keep working — both `mcp_servers` and the
+  absence of `REGISTRY_URL` are fully backwards-compatible. When you bump
+  to 0.5.0 and set `REGISTRY_URL` in your environment, your service
+  self-registers automatically. Migrate `mcp_servers` → `mcp_dependencies`
+  on your own schedule before 0.6.0.
+
 ## 0.4.0 — 2026-04-30
 
 ### Added
