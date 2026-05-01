@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
+from ..config import MCPConfig
 from .application import Application
 
 if TYPE_CHECKING:
-    from ..config import MCPConfig
     from ..protocols import Authorizer, CacheStore
 
 
@@ -20,13 +20,16 @@ class McpService(Application):
     assert_secrets: bool = False
     enable_telemetry: bool = False
 
+    # Auto-load MCPConfig when no explicit config= is passed to __init__.
+    config_model: ClassVar[type] = MCPConfig
+
     def __init__(
         self,
         name: str,
         *,
-        config: Optional[MCPConfig] = None,
-        authorizer: Optional[Authorizer] = None,
-        cache: Optional[CacheStore] = None,
+        config: Optional["MCPConfig"] = None,
+        authorizer: Optional["Authorizer"] = None,
+        cache: Optional["CacheStore"] = None,
         db_pool: Any = None,
     ) -> None:
         """
@@ -34,19 +37,18 @@ class McpService(Application):
 
         Args:
             name: The service name.
-            config: Optional MCPConfig to inject. If not provided, will load from environment.
+            config: Optional MCPConfig to inject. If not provided, loads via config_model.
             authorizer: Optional Authorizer for authorization. If not provided, will be created.
             cache: Optional CacheStore for caching. If not provided, will be created if enabled.
             db_pool: Optional asyncpg database pool. If not provided, will be created if required.
         """
-        self._config = config
         self._authorizer = authorizer
         self._cache = cache
         self._db_pool = db_pool
         self._owns_authorizer = False
         self._owns_cache = False
         self._owns_db_pool = False
-        super().__init__(name)
+        super().__init__(name, config=config)
 
     @property
     def mcp_config(self) -> MCPConfig:
@@ -79,26 +81,6 @@ class McpService(Application):
                 "Database pool not available. Ensure it was injected or created during startup."
             )
         return self._db_pool
-
-    def load_config(self, name: str) -> MCPConfig:
-        """
-        Load configuration for this MCP service.
-
-        If config was injected via constructor, returns that.
-        Otherwise loads from environment.
-
-        Args:
-            name: The service name.
-
-        Returns:
-            The loaded MCPConfig.
-        """
-        if self._config is not None:
-            return self._config
-
-        from ..config import MCPConfig
-
-        return MCPConfig.from_env()
 
     @asynccontextmanager
     async def lifespan(self, server: Any) -> Any:

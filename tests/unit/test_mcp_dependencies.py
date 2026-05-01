@@ -43,7 +43,8 @@ async def test_mcp_dependencies_resolves_via_registry(monkeypatch):
         def build_dependencies(self, *, bridges, checkpointer, store): return {}
         def routes(self): return []
 
-    app = _RegistryDrivenApp()
+    from platform_sdk.config import AgentConfig
+    app = _RegistryDrivenApp(config=AgentConfig(environment="dev"))
     app.registry = _StubRegistry()  # type: ignore[assignment]
 
     bridges = await app._connect_bridges(agent_ctx=None, timeout=30.0)
@@ -85,7 +86,8 @@ async def test_mcp_dependencies_skips_unhealthy_services(monkeypatch):
         def build_dependencies(self, *, bridges, checkpointer, store): return {}
         def routes(self): return []
 
-    app = _SkipUnhealthyApp()
+    from platform_sdk.config import AgentConfig
+    app = _SkipUnhealthyApp(config=AgentConfig(environment="dev"))
     app.registry = _StubRegistry()  # type: ignore[assignment]
     bridges = await app._connect_bridges(agent_ctx=None, timeout=10.0)
     assert "alive" in bridges and "stale-one" not in bridges
@@ -93,6 +95,7 @@ async def test_mcp_dependencies_skips_unhealthy_services(monkeypatch):
 
 def test_mcp_servers_emits_deprecation_warning():
     """Setting only mcp_servers (no mcp_dependencies) logs a DeprecationWarning."""
+    from platform_sdk.config import AgentConfig
     from platform_sdk.fastapi_app import BaseAgentApp
 
     class _DeprecatedApp(BaseAgentApp):
@@ -103,13 +106,14 @@ def test_mcp_servers_emits_deprecation_warning():
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        app = _DeprecatedApp()
+        app = _DeprecatedApp(config=AgentConfig(environment="dev"))
         app._warn_if_using_legacy_mcp_servers()
     assert any(issubclass(w.category, DeprecationWarning) for w in caught)
 
 
 def test_mcp_dependencies_takes_precedence_over_mcp_servers():
     """If both are set, mcp_dependencies wins (no warning fires)."""
+    from platform_sdk.config import AgentConfig
     from platform_sdk.fastapi_app import BaseAgentApp
 
     class _BothApp(BaseAgentApp):
@@ -119,7 +123,7 @@ def test_mcp_dependencies_takes_precedence_over_mcp_servers():
         def build_dependencies(self, *, bridges, checkpointer, store): return {}
         def routes(self): return []
 
-    app = _BothApp()
+    app = _BothApp(config=AgentConfig(environment="dev"))
     # _warn_if_using_legacy_mcp_servers should be a no-op when mcp_dependencies is non-empty
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

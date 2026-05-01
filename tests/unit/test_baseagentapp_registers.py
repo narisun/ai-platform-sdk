@@ -8,13 +8,12 @@ pytestmark = pytest.mark.unit
 
 @pytest.mark.asyncio
 async def test_lifespan_calls_register_before_bridges_and_deregister_on_teardown(monkeypatch):
-    monkeypatch.setenv("REGISTRY_URL", "http://r:8090")
-    monkeypatch.setenv("INTERNAL_API_KEY", "k")
-    monkeypatch.setenv("SERVICE_URL", "http://me:8000")
     order: list[str] = []
 
     class FakeRegistry:
         def __init__(self, **kw): pass
+        @classmethod
+        def from_config(cls, config, registry_url=None): return cls()
         async def register_self(self, p): order.append("register")
         async def start_heartbeat(self, n): order.append("heartbeat_start")
         async def start_refresh(self): order.append("refresh_start")
@@ -25,7 +24,14 @@ async def test_lifespan_calls_register_before_bridges_and_deregister_on_teardown
 
     monkeypatch.setattr("platform_sdk.base.application.RegistryClient", FakeRegistry)
 
+    from platform_sdk.config import AgentConfig
     from platform_sdk.fastapi_app import BaseAgentApp
+
+    cfg = AgentConfig(
+        environment="dev",
+        registry_url="http://r:8090",
+        service_url="http://me:8000",
+    )
 
     class TestApp(BaseAgentApp):
         service_name = "test-agent"
@@ -39,7 +45,7 @@ async def test_lifespan_calls_register_before_bridges_and_deregister_on_teardown
             return {}
         def routes(self): return []
 
-    app_obj = TestApp()
+    app_obj = TestApp(config=cfg)
     fastapi_app = app_obj.create_app()
     async with fastapi_app.router.lifespan_context(fastapi_app):
         order.append("yield")

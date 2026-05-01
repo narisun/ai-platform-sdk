@@ -8,13 +8,12 @@ pytestmark = pytest.mark.unit
 
 @pytest.mark.asyncio
 async def test_mcp_service_registers_on_startup_and_deregisters_on_shutdown(monkeypatch):
-    monkeypatch.setenv("REGISTRY_URL", "http://r:8090")
-    monkeypatch.setenv("INTERNAL_API_KEY", "k")
-    monkeypatch.setenv("SERVICE_URL", "http://me:8080")
     order: list[str] = []
 
     class FakeRegistry:
         def __init__(self, **kw): pass
+        @classmethod
+        def from_config(cls, config, registry_url=None): return cls()
         async def register_self(self, p): order.append("register")
         async def start_heartbeat(self, n): order.append("hb_start")
         async def start_refresh(self): order.append("rf_start")
@@ -26,6 +25,13 @@ async def test_mcp_service_registers_on_startup_and_deregisters_on_shutdown(monk
     monkeypatch.setattr("platform_sdk.base.application.RegistryClient", FakeRegistry)
 
     from platform_sdk.base import McpService
+    from platform_sdk.config import MCPConfig
+
+    cfg = MCPConfig(
+        environment="dev",
+        registry_url="http://r:8090",
+        service_url="http://me:8080",
+    )
 
     class _MyMcpService(McpService):
         service_type = "mcp"
@@ -39,7 +45,7 @@ async def test_mcp_service_registers_on_startup_and_deregisters_on_shutdown(monk
         async def on_shutdown(self):
             order.append("on_shutdown")
 
-    svc = _MyMcpService("ai-mcp-test")
+    svc = _MyMcpService("ai-mcp-test", config=cfg)
 
     async with svc.lifespan(server=None):
         order.append("yield")
