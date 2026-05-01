@@ -76,3 +76,17 @@ def test_pydantic_validation_errors_aggregated(tmp_path):
     text = str(exc.value)
     assert "port" in text
     assert "-1" in text or "greater than 0" in text or "gt=0" in text
+
+
+def test_empty_default_yaml_yields_pydantic_validation_error(tmp_path):
+    """Empty default.yaml must surface as missing required fields, not a crash."""
+    from platform_sdk.config.loader import ConfigError, load_config
+
+    (tmp_path / "default.yaml").write_text("")  # empty file
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(_SampleConfig, config_dir=str(tmp_path), env="dev")
+
+    text = str(exc.value)
+    # _SampleConfig has a required `name: str`; Pydantic should complain about it.
+    assert "name" in text

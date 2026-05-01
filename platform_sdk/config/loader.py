@@ -152,9 +152,11 @@ def _substitute(node: Any, source_path: Path, errors: list[ConfigErrorDetail]) -
         return {k: _substitute(v, source_path, errors) for k, v in node.items()}
     if isinstance(node, list):
         return [_substitute(v, source_path, errors) for v in node]
+    # Only string scalars carry ${VAR} references; numeric/bool fields must be quoted in YAML if they need substitution.
     if not isinstance(node, str):
         return node
 
+    # NUL is forbidden in YAML scalars and POSIX env values, so this sentinel is collision-free.
     SENTINEL = "\x00DOLLAR\x00"
     work = node.replace("$$", SENTINEL)
 
