@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.1 — 2026-05-01
+
+### Fixed
+- `McpService.run_with_registration(mcp, transport)` — new helper that
+  registers + heartbeats on a background asyncio thread, then calls
+  `mcp.run(transport)`. Use this in MCP service `__main__` blocks
+  instead of `mcp.run()` directly.
+
+  Reason: FastMCP's SSE-mode lifespan attaches to a per-connection ASGI
+  app, so registration tied to lifespan only fires while a client is
+  mid-stream. Without this helper, MCP services never persist as
+  `state=registered` in the registry catalog. The lifespan-based wiring
+  in `Application._register` / `_deregister` (introduced in 0.5.0) is
+  retained for FastAPI agents (where lifespan IS process-scoped).
+
+### Migration notes
+- MCP service authors: change your `__main__` block from
+  `mcp.run(transport=TRANSPORT)` to
+  `service.run_with_registration(mcp, TRANSPORT)`. The existing
+  `lifespan=service.lifespan` argument to `FastMCP(...)` should be
+  retained — it still drives OPA / cache / db_pool init for tools.
+- FastAPI agents (`BaseAgentApp` subclasses) are unaffected.
+
 ## 0.5.0 — 2026-05-01
 
 ### Added

@@ -192,6 +192,75 @@ class McpService(Application):
                 await self._db_pool.close()
                 self._db_pool = None
 
+    def run_with_registration(self, mcp: Any, transport: str = "sse") -> None:
+        """Register with the platform registry, run FastMCP, deregister on exit.
+
+        Use this instead of mcp.run() in your service's __main__ block when
+        the service uses MCP SSE transport. FastMCP's SSE lifespan runs
+        per-connection (not per-process), so we manage registration on a
+        background asyncio thread that lives for the whole process.
+
+        Example::
+
+            if __name__ == "__main__":
+                service = MyMcpService("my-mcp")
+                mcp = FastMCP("my-mcp", lifespan=service.lifespan, ...)
+                service.register_tools(mcp)
+                service.run_with_registration(mcp, TRANSPORT)
+        """
+        import asyncio
+        import threading
+
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+        stop_signal = threading.Event()
+
+        def _run_loop() -> None:
+            asyncio.set_event_loop(loop)
+
+            async def _idle() -> None:
+                ready.set()
+                while not stop_signal.is_set():
+                    await asyncio.sleep(0.5)
+
+            loop.run_until_complete(_idle())
+            # Drain any leftover tasks (heartbeat, refresh background tasks)
+            try:
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            loop.close()
+
+        thread = threading.Thread(target=_run_loop, daemon=True, name="mcp-registry-loop")
+        thread.start()
+        if not ready.wait(timeout=5.0):
+            raise RuntimeError("background registry loop did not start within 5s")
+
+        # Register + start heartbeat in the background loop
+        fut = asyncio.run_coroutine_threadsafe(self._register(), loop)
+        try:
+            fut.result(timeout=10.0)
+        except Exception as exc:
+            log = self.logger
+            log.warning("mcp_register_failed_continuing", error=str(exc))
+            # Continue serving requests even if registration fails — the operator
+            # will see the warning, and the registry's reaper will clean up
+            # stale entries on its own schedule.
+
+        try:
+            mcp.run(transport=transport)
+        finally:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(self._deregister(), loop)
+                fut.result(timeout=10.0)
+            except Exception as exc:
+                self.logger.warning("mcp_deregister_failed", error=str(exc))
+            stop_signal.set()
+            thread.join(timeout=5.0)
+
     async def on_startup(self) -> None:
         """
         Async startup hook. Override in subclasses if needed.
